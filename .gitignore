@@ -1,0 +1,51 @@
+# Dependencies
+frontend/node_modules/
+backend/.venv/
+.venv/
+
+# Build output
+frontend/.next/
+frontend/out/
+frontend/dist/
+frontend/tsconfig.tsbuildinfo
+
+# Environment
+.env
+.env.local
+.env.production
+
+# OS
+.DS_Store
+*.log
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+
+# IDE
+.vscode/
+.idea/
+
+# Aperant data directory
+.auto-claude/
+
+# Misc
+videos/
+
+# Local AI-assistant state (personal — never publish)
+.claude/
+.claw-dev/
+
+# Internal planning docs
+/to-*.html
+/crs01-*.html
+
+# KB runtime artifacts — the .db and ingest ledger are tracked on purpose;
+# raw fetch payloads and snapshot archives are local-only
+backend/data/raw/
+backend/data/snapshots/
+*.db-wal
+*.db-shm
+*.db-journal

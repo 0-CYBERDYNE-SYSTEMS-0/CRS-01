@@ -1,0 +1,109 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Fonts load via next/font in app/layout.tsx — no Google Fonts @import here
+   (it double-loaded Inter). */
+
+:root {
+  /* CRS-01 Design Tokens — Earth Palette */
+  --bg-deep: #0F2A1F;
+  --bg-surface: #1F3A2F;
+  --accent: #D4A017;
+  --accent-dim: #8B6914;
+  --text-primary: #EDE6D8;
+  --text-muted: #8B9A8E;
+  --text-faint: #5A6B5F;
+  --border: #2A4A3A;
+
+  /* Trust Tier Colors — canonical display hexes (mirrored by
+     TRUST_TIER_META in src/lib/types.ts) */
+  --trust-verified: #D4A017;
+  --trust-community: #2DD4BF;
+  --trust-anecdotal: #94A3B8;
+  --trust-contradicted: #EF4444;
+}
+
+/* Reset */
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html {
+  scroll-behavior: smooth;
+  background-color: var(--bg-deep);
+}
+
+body {
+  background-color: var(--bg-deep);
+  color: var(--text-primary);
+  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  font-weight: 400;
+  font-size: 15px;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  min-height: 100vh;
+}
+
+/* Typography */
+h1, h2, h3, h4, h5, h6 {
+  font-weight: 500;
+  line-height: 1.3;
+  color: var(--text-primary);
+}
+
+h1 { font-size: 2rem; }
+h2 { font-size: 1.5rem; }
+h3 { font-size: 1.25rem; }
+
+/* ── Custom scrollbar ───────────────────────── */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: var(--bg-deep);
+}
+::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-muted);
+}
+
+/* Selection */
+::selection {
+  background: rgba(212, 160, 23, 0.3);
+  color: var(--text-primary);
+}
+
+/* Focus states */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* ── Utility classes ───────────────────────── */
+
+/* Serif display — EB Garamond is loaded via next/font in layout.tsx.
+   Inline styles can reference var(--font-eb-garamond) directly. */
+.font-serif {
+  font-family: var(--font-eb-garamond), "EB Garamond", Georgia, serif;
+}
+
+/* Frosted panel chrome used across the workspace shell */
+.glass {
+  background: rgba(19, 26, 21, 0.72);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+
+/* Soft inner shadow that seats the graph pane into the shell */
+.pane-vignette {
+  box-shadow: inset 0 0 110px rgba(0, 0, 0, 0.38);
+}
