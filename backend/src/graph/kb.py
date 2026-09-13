@@ -221,8 +221,15 @@ def upsert_strain(
     breeder: Optional[str] = None,
     last_researched: Optional[int] = None,
 ) -> str:
-    """Insert or refresh a strain row. Never overwrites a non-null field
-    with null (first observation wins for metadata we can't re-confirm)."""
+    """Insert or refresh a strain row. Fill-only-if-null: the FIRST non-null
+    value for each metadata field (summary, image_url, thc_range, strain_type,
+    breeder) wins and later research runs never overwrite it — automated
+    merges can fill gaps but cannot churn existing metadata. Nulls never
+    clobber in either direction; only the empty→filled transition happens.
+
+    ``last_researched`` always refreshes (freshness is not metadata), and
+    ``name`` refreshes so the stored spelling tracks the latest canonical
+    form of the same slug."""
     slug = normalize_slug(name)
     now = last_researched or _now()
     conn.execute(
@@ -233,11 +240,11 @@ def upsert_strain(
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(slug) DO UPDATE SET
             name            = excluded.name,
-            summary         = COALESCE(excluded.summary,   strains.summary),
-            image_url       = COALESCE(excluded.image_url, strains.image_url),
-            thc_range       = COALESCE(excluded.thc_range, strains.thc_range),
-            strain_type     = COALESCE(excluded.strain_type, strains.strain_type),
-            breeder         = COALESCE(excluded.breeder,   strains.breeder),
+            summary         = COALESCE(strains.summary,   excluded.summary),
+            image_url       = COALESCE(strains.image_url, excluded.image_url),
+            thc_range       = COALESCE(strains.thc_range, excluded.thc_range),
+            strain_type     = COALESCE(strains.strain_type, excluded.strain_type),
+            breeder         = COALESCE(strains.breeder,   excluded.breeder),
             last_researched = excluded.last_researched
         """,
         (slug, name.strip(), origin, summary, image_url,
