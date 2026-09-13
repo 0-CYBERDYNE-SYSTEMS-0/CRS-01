@@ -191,11 +191,9 @@ function ConflictCard({
               key={t.parents.join("|")}
               tuple={t}
               childSlug={conflict.child}
-              open={openKey === `${index}-${ti}`}
-              onToggle={() =>
-                onToggle(openKey === `${index}-${ti}` ? null : `${index}-${ti}`)
-              }
               toggleKey={`${index}-${ti}`}
+              openKey={openKey}
+              onToggle={onToggle}
               onQuarantined={onQuarantined}
             />
           ))}
@@ -213,11 +211,9 @@ function ConflictCard({
               key={t.parents.join("|")}
               tuple={t}
               childSlug={conflict.child}
-              open={openKey === `${index}-${ti}`}
-              onToggle={() =>
-                onToggle(openKey === `${index}-${ti}` ? null : `${index}-${ti}`)
-              }
               toggleKey={`${index}-${ti}`}
+              openKey={openKey}
+              onToggle={onToggle}
               onQuarantined={onQuarantined}
             />
           ))}
@@ -230,18 +226,20 @@ function ConflictCard({
 function TupleCell({
   tuple,
   childSlug,
-  open,
-  onToggle,
   toggleKey,
+  openKey,
+  onToggle,
   onQuarantined,
 }: {
   tuple: ConflictTuple;
   childSlug: string;
-  open: boolean;
-  onToggle: () => void;
   toggleKey: string;
+  openKey: string | null;
+  onToggle: (key: string | null) => void;
   onQuarantined: (sourceUrl: string) => void;
 }) {
+  const open = openKey === toggleKey;
+  const sourcesId = `${toggleKey}-sources`;
   const count = tuple.sources.length;
   // A source asserting this tuple contributed an observation for EACH parent
   // in it — quarantining the source quarantines all of them.
@@ -287,8 +285,9 @@ function TupleCell({
       </div>
       <button
         type="button"
-        onClick={onToggle}
+        onClick={() => onToggle(open ? null : toggleKey)}
         aria-expanded={open}
+        aria-controls={sourcesId}
         className="mt-1.5 cursor-pointer text-[9px] uppercase tracking-[0.08em] underline underline-offset-2 transition-colors"
         style={{ color: TEXT_MUTED, background: "none", border: "none", padding: 0 }}
         onMouseEnter={(e) => { e.currentTarget.style.color = CONTRADICTED; }}
@@ -298,7 +297,11 @@ function TupleCell({
       </button>
 
       {open && (
-        <div className="mt-2 flex flex-col gap-2 border-t pt-2" style={{ borderColor: `${CONTRADICTED}22` }}>
+        <div
+          id={sourcesId}
+          className="mt-2 flex flex-col gap-2 border-t pt-2"
+          style={{ borderColor: `${CONTRADICTED}22` }}
+        >
           {tuple.sources.map((s) => (
             <div key={s.url}>
               <div className="flex items-baseline justify-between gap-2">

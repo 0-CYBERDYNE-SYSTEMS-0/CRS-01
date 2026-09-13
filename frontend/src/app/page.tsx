@@ -185,6 +185,9 @@ function HomePageInner() {
     return () => {
       cancelled = true;
     };
+    // performResearch omitted: its `researching` guard no-ops re-entry.
+    // Listing it would refetch the neighborhood whenever that flag flips.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeStrain, kbVersion]);
 
   // ── Fetch health on mount ──────────────────────────────────────────
