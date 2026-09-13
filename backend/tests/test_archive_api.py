@@ -285,6 +285,12 @@ def test_autolookup_off_by_default_no_lookup_calls(monkeypatch):
 def test_merge_hook_with_flag_on_persists_hits(monkeypatch):
     monkeypatch.setattr(settings, "wayback_autolookup", True)
 
+    # Known parents: the unresolved-parent gate only materializes names the
+    # KB has already seen, so seed them to keep the strain count meaningful.
+    with kb.connect() as conn:
+        kb.upsert_strain(conn, "Afghani")
+        kb.upsert_strain(conn, "Thai")
+
     def fake_lookup(url):
         if url == "https://a.test/nl":
             return {

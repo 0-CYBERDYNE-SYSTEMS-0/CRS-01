@@ -9,8 +9,15 @@ Design notes
 ------------
 - Raw evidence is append-only: ``lineage_sources`` keeps one row per
   (child, parent, source_url) observation. Aggregates (``lineage_edges``,
-  strain tiers) are *derived* and recomputed after each merge, so the data
-  always speaks from the evidence.
+  strain tiers) are *derived* and recomputed after each merge, so the
+  data always speaks from the evidence.
+- Unresolved parents are gated, not materialized: an observation naming a
+  parent strain the KB has never seen is recorded but flagged
+  ``quarantine_reason='UNRESOLVED_PARENT'`` — it enters no aggregate and
+  no strain node is created for the name. The gate clears when the parent
+  becomes a real KB strain through its own research, or a curator resolves
+  it (``resolve_parent``). A human quarantine/restore decision
+  (``HUMAN_APPROVED``) always supersedes the mechanical gate.
 - Agreement semantics (locked with the product owner 2026-08-19):
     green  = 2+ independent domains agree on the tuple  → COMMUNITY_CONSENSUS
     amber  = a single source asserts it                 → ANECDOTAL
@@ -39,6 +46,16 @@ from urllib.parse import urlparse
 # ---------------------------------------------------------------------------
 
 _DEFAULT_KB = Path(__file__).resolve().parents[2] / "data" / "crs01.db"
+
+# quarantine_reason values on lineage_sources / claims (NULL = a plain human
+# quarantine — the pre-gate meaning of quarantined=1).
+UNRESOLVED_PARENT = "UNRESOLVED_PARENT"   # mechanical gate, active
+HUMAN_APPROVED = "HUMAN_APPROVED"         # human cleared it; never re-gated
+
+def _slug_display_name(slug: str) -> str:
+    """Default display name for a slug with no strains row yet — a best-effort
+    title-case of the slug's parts. Curators pass a real name on resolve."""
+    return " ".join(part.capitalize() for part in (slug or "").split("-") if part)
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS strains (
@@ -153,9 +170,21 @@ def connect() -> sqlite3.Connection:
     conn.execute("PRAGMA foreign_keys=ON")
     conn.executescript(_SCHEMA)
     _ensure_columns(
-        conn, "lineage_sources", (("quarantined", "INTEGER NOT NULL DEFAULT 0"),)
+        conn,
+        "lineage_sources",
+        (
+            ("quarantined", "INTEGER NOT NULL DEFAULT 0"),
+            ("quarantine_reason", "TEXT"),
+        ),
     )
-    _ensure_columns(conn, "claims", (("quarantined", "INTEGER NOT NULL DEFAULT 0"),))
+    _ensure_columns(
+        conn,
+        "claims",
+        (
+            ("quarantined", "INTEGER NOT NULL DEFAULT 0"),
+            ("quarantine_reason", "TEXT"),
+        ),
+    )
     _ensure_columns(
         conn,
         "strains",
@@ -672,6 +701,11 @@ def merge_research_run(run: Dict[str, Any]) -> Dict[str, Any]:
     one is mined VERBATIM from that evidence and stored with attribution
     (never overwriting an existing summary; missing raw_dir → no summary).
 
+    Unresolved-parent gate: a parent name the strains table has never seen
+    is NOT materialized; its observations are recorded but gated
+    (quarantine_reason='UNRESOLVED_PARENT') until the name becomes a real
+    KB strain through its own research or a curator resolves it.
+
     Returns a summary dict {strains, edges, claims, sources} for logging.
     """
     claims = run.get("lineage_claims") or []
@@ -683,6 +717,9 @@ def merge_research_run(run: Dict[str, Any]) -> Dict[str, Any]:
             upsert_source(conn, s.get("url", ""), s.get("title", ""), s.get("engine", ""))
 
         seen_strains: Set[str] = set()
+        # (child, parent, url) observations written by THIS merge whose
+        # parent had no strains row — handed to the unresolved-parent gate.
+        fresh_unknown: Set[Tuple[str, str, str]] = set()
 
         def _touch(name: str) -> None:
             slug = normalize_slug(name)
@@ -701,6 +738,11 @@ def merge_research_run(run: Dict[str, Any]) -> Dict[str, Any]:
             )
             counts["strains"] += 1
 
+        def _known(slug: str) -> bool:
+            return conn.execute(
+                "SELECT 1 FROM strains WHERE slug=?", (slug,)
+            ).fetchone() is not None
+
         for c in claims:
             child = c.get("child") or run.get("query") or ""
             parents = [c.get("parent_a"), c.get("parent_b")]
@@ -708,7 +750,12 @@ def merge_research_run(run: Dict[str, Any]) -> Dict[str, Any]:
             parents = [p for p in parents if p]
             _touch(child)
             for p in parents:
-                _touch(p)
+                known = _known(normalize_slug(p))
+                if known:
+                    # Known parents refresh like before. Unknown parents are
+                    # NOT materialized — their observations land in the gate
+                    # until the name proves real (see _run_parent_gate).
+                    _touch(p)
                 record_lineage_observation(
                     conn, child, p,
                     c.get("source_url", ""),
@@ -717,6 +764,11 @@ def merge_research_run(run: Dict[str, Any]) -> Dict[str, Any]:
                     engine=c.get("source_engine", ""),
                     excerpt=c.get("snippet_excerpt", ""),
                 )
+                if not known:
+                    fresh_unknown.add((
+                        normalize_slug(child), normalize_slug(p),
+                        c.get("source_url", ""),
+                    ))
                 counts["edges"] += 1
             # Keep a human-readable claim row per assertion, tied to the child.
             if parents:
@@ -760,6 +812,11 @@ def merge_research_run(run: Dict[str, Any]) -> Dict[str, Any]:
                         (mined["summary"], mined["summary_source_url"],
                          mined["summary_source_title"], subject_slug),
                     )
+
+        # Unresolved-parent gate: hold fresh unknown-parent observations
+        # out of every aggregate, then release any whose parent has (in this
+        # or an earlier merge) become a real KB strain. Spec §3.1.
+        _run_parent_gate(conn, fresh_unknown)
 
         record_run(
             conn,
@@ -1387,15 +1444,23 @@ def set_observation_quarantined(
     The lineage_sources row is never deleted (append-only); quarantine just
     hides it from every aggregate. Raises KeyError when no observation row
     matches. Returns the updated strain state plus what remains of that edge.
+
+    A human decision supersedes the mechanical unresolved-parent gate:
+    quarantining clears ``quarantine_reason`` (the row becomes a plain human
+    quarantine the gate passes will never touch), and restoring stamps
+    ``HUMAN_APPROVED`` so a later merge never re-gates the approved row.
+    Restoring an observation whose parent has no strains row materializes
+    that parent — approving the observation asserts the parent.
     """
     norm_child = normalize_slug(child_slug)
     norm_parent = normalize_slug(parent_slug)
     flag = 1 if quarantined else 0
+    reason = None if quarantined else HUMAN_APPROVED
     with connect() as conn:
         cur = conn.execute(
-            "UPDATE lineage_sources SET quarantined=? "
+            "UPDATE lineage_sources SET quarantined=?, quarantine_reason=? "
             "WHERE child_slug=? AND parent_slug=? AND source_url=?",
-            (flag, norm_child, norm_parent, source_url),
+            (flag, reason, norm_child, norm_parent, source_url),
         )
         if cur.rowcount == 0:
             raise KeyError(
@@ -1403,10 +1468,21 @@ def set_observation_quarantined(
             )
         # Matching LINEAGE claims from the same URL follow the observation.
         conn.execute(
-            "UPDATE claims SET quarantined=? "
+            "UPDATE claims SET quarantined=?, quarantine_reason=? "
             "WHERE child_slug=? AND type='LINEAGE' AND source_url=?",
-            (flag, norm_child, source_url),
+            (flag, reason, norm_child, source_url),
         )
+        if not quarantined:
+            parent_row = conn.execute(
+                "SELECT slug FROM strains WHERE slug=?", (norm_parent,)
+            ).fetchone()
+            if parent_row is None:
+                conn.execute(
+                    "INSERT INTO strains (slug, name, origin, first_seen, "
+                    "last_researched) VALUES (?, ?, 'resolved', ?, ?) "
+                    "ON CONFLICT(slug) DO NOTHING",
+                    (norm_parent, _slug_display_name(norm_parent), _now(), _now()),
+                )
         recompute(conn)
         strain = conn.execute(
             "SELECT * FROM strains WHERE slug=?", (norm_child,)
@@ -1435,6 +1511,165 @@ def set_observation_quarantined(
             "source_count": edge["source_count"] if edge else 0,
             "domain_count": edge["domain_count"] if edge else 0,
         },
+    }
+
+
+# ---------------------------------------------------------------------------
+# Unresolved-parent gate — merge-time state for claims about parents the KB
+# has never seen (see module docstring). The merge pipeline flags; only the
+# parent's own research or a curator clears.
+# ---------------------------------------------------------------------------
+
+def _sync_claim_gate(conn: sqlite3.Connection) -> None:
+    """Keep LINEAGE claim rows in step with their observations' gate state.
+
+    An assertion is a parent-SET, so a claim whose (child, source_url)
+    contains any gated observation is held back entirely; a claim whose URL
+    no longer hides anything comes back. Only machine-gate reasoning is
+    touched here — plain human quarantines (reason NULL) keep hiding.
+    """
+    conn.execute(
+        "UPDATE claims SET quarantined=1, quarantine_reason=? "
+        "WHERE type='LINEAGE' AND quarantined=0 AND EXISTS ("
+        "  SELECT 1 FROM lineage_sources ls"
+        "  WHERE ls.child_slug=claims.child_slug"
+        "    AND ls.source_url=claims.source_url"
+        "    AND ls.quarantined=1 AND ls.quarantine_reason=?)",
+        (UNRESOLVED_PARENT, UNRESOLVED_PARENT),
+    )
+    conn.execute(
+        "UPDATE claims SET quarantined=0, quarantine_reason=NULL "
+        "WHERE quarantined=1 AND quarantine_reason=? AND NOT EXISTS ("
+        "  SELECT 1 FROM lineage_sources ls"
+        "  WHERE ls.child_slug=claims.child_slug"
+        "    AND ls.source_url=claims.source_url AND ls.quarantined=1)",
+        (UNRESOLVED_PARENT,),
+    )
+
+
+def _run_parent_gate(
+    conn: sqlite3.Connection,
+    fresh_unknown: Set[Tuple[str, str, str]],
+) -> None:
+    """Gate fresh observations naming unknown parents, then release any
+    gated observation whose parent has since materialized (its own research
+    made the name real — the deterministic 'hard verifier'). Runs inside the
+    merge transaction, before recompute()."""
+    for child_slug, parent_slug, url in fresh_unknown:
+        conn.execute(
+            "UPDATE lineage_sources SET quarantined=1, quarantine_reason=? "
+            "WHERE child_slug=? AND parent_slug=? AND source_url=? "
+            "AND quarantined=0 "
+            "AND (quarantine_reason IS NULL OR quarantine_reason <> ?)",
+            (UNRESOLVED_PARENT, child_slug, parent_slug, url, HUMAN_APPROVED),
+        )
+    conn.execute(
+        "UPDATE lineage_sources SET quarantined=0, quarantine_reason=NULL "
+        "WHERE quarantined=1 AND quarantine_reason=? "
+        "AND parent_slug IN (SELECT slug FROM strains)",
+        (UNRESOLVED_PARENT,),
+    )
+    _sync_claim_gate(conn)
+
+
+def resolve_parent(parent_slug: str, name: str = "") -> Dict[str, Any]:
+    """Human approval of a gated parent — the curation path out of the gate.
+
+    Creates the strains row when the name has never materialized (origin
+    ``'resolved'``), releases every UNRESOLVED_PARENT observation citing
+    this parent, and re-derives. Plain human quarantines (reason NULL) are
+    untouched: approving that the name is real is not vouching for
+    quarantined evidence. Raises KeyError when nothing is pending.
+    """
+    norm = normalize_slug(parent_slug)
+    if not norm:
+        raise ValueError("parent_slug is required")
+    with connect() as conn:
+        cur = conn.execute(
+            "UPDATE lineage_sources SET quarantined=0, quarantine_reason=NULL "
+            "WHERE parent_slug=? AND quarantined=1 AND quarantine_reason=?",
+            (norm, UNRESOLVED_PARENT),
+        )
+        if cur.rowcount == 0:
+            raise KeyError(
+                f"no unresolved-parent observations pending for {norm!r}"
+            )
+        display = (name or "").strip() or _slug_display_name(norm)
+        conn.execute(
+            "INSERT INTO strains (slug, name, origin, first_seen, "
+            "last_researched) VALUES (?, ?, 'resolved', ?, ?) "
+            "ON CONFLICT(slug) DO NOTHING",
+            (norm, display, _now(), _now()),
+        )
+        _sync_claim_gate(conn)
+        recompute(conn)
+        row = conn.execute(
+            "SELECT * FROM strains WHERE slug=?", (norm,)
+        ).fetchone()
+        children = sorted(
+            r["child_slug"]
+            for r in conn.execute(
+                "SELECT DISTINCT child_slug FROM lineage_sources "
+                "WHERE parent_slug=? AND NOT quarantined",
+                (norm,),
+            ).fetchall()
+        )
+    return {
+        "parent": _strain_summary_row(row) if row else None,
+        "display_name": display,
+        "resolved_observations": cur.rowcount,
+        "children": children,
+    }
+
+
+def pending_parents(limit: int = 200) -> Dict[str, Any]:
+    """The review queue: observations held by the unresolved-parent gate,
+    grouped by parent name, newest first."""
+    limit = max(1, min(int(limit), 500))
+    with connect() as conn:
+        total = conn.execute(
+            "SELECT COUNT(*) AS c FROM lineage_sources "
+            "WHERE quarantined=1 AND quarantine_reason=?",
+            (UNRESOLVED_PARENT,),
+        ).fetchone()["c"]
+        rows = conn.execute(
+            "SELECT parent_slug, child_slug, source_url, source_title, "
+            "engine, excerpt, confidence, observed_at "
+            "FROM lineage_sources WHERE quarantined=1 AND quarantine_reason=? "
+            "ORDER BY observed_at DESC, parent_slug ASC, child_slug ASC "
+            "LIMIT ?",
+            (UNRESOLVED_PARENT, limit),
+        ).fetchall()
+
+    grouped: Dict[str, List[Dict[str, Any]]] = {}
+    order: List[str] = []
+    for r in rows:
+        parent = r["parent_slug"]
+        if parent not in grouped:
+            grouped[parent] = []
+            order.append(parent)
+        grouped[parent].append({
+            "child_slug": r["child_slug"],
+            "source_url": r["source_url"],
+            "source_title": r["source_title"],
+            "engine": r["engine"],
+            "excerpt": r["excerpt"],
+            "confidence": r["confidence"],
+            "observed_at": r["observed_at"],
+        })
+    return {
+        "total_observations": total,
+        "total_parents": len(order),
+        "limit": limit,
+        "parents": [
+            {
+                "parent_slug": parent,
+                "parent_name": _slug_display_name(parent),
+                "observation_count": len(grouped[parent]),
+                "children": grouped[parent],
+            }
+            for parent in order
+        ],
     }
 
 
@@ -1625,6 +1860,11 @@ def stats() -> Dict[str, Any]:
             "SELECT COUNT(*) AS c FROM claims WHERE NOT quarantined"
         ).fetchone()["c"]
         runs = conn.execute("SELECT COUNT(*) AS c FROM research_runs").fetchone()["c"]
+        pending = conn.execute(
+            "SELECT COUNT(*) AS c FROM lineage_sources "
+            "WHERE quarantined=1 AND quarantine_reason=?",
+            (UNRESOLVED_PARENT,),
+        ).fetchone()["c"]
     tier_counts: Dict[str, int] = {}
     for r in strains:
         tier_counts[r["trust_tier"]] = tier_counts.get(r["trust_tier"], 0) + 1
@@ -1636,6 +1876,7 @@ def stats() -> Dict[str, Any]:
         "total_sources": n_sources,
         "total_claims": n_claims,
         "research_runs": runs,
+        "pending_parent_observations": pending,
         "node_types": {"Strain": len(strains), "Person": 0, "Claim": n_claims},
         "trust_distribution": tier_counts,
     }

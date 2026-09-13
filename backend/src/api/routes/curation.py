@@ -7,12 +7,14 @@ human loop:
 - POST /graph/strains/{slug}/review     — set/clear a human trust tier
 - POST /graph/observations/quarantine   — flag a bad raw observation out
                                           of every aggregate
+- GET  /graph/parents/pending           — the unresolved-parent gate queue
+- POST /graph/parents/{slug}/resolve    — approve a gated parent name
 
-Both are plain-dict responses (no response models), matching the
-neighboring per-strain routes in graph.py / evidence.py. CONTRADICTED is
-deliberately not assignable here: it is a data-derived verdict (conflicting
-parent sets), not a curation choice — it arrives and leaves with the
-evidence.
+Both review and resolve are plain-dict responses (no response models),
+matching the neighboring per-strain routes in graph.py / evidence.py.
+CONTRADICTED is deliberately not assignable here: it is a data-derived
+verdict (conflicting parent sets), not a curation choice — it arrives and
+leaves with the evidence.
 """
 from __future__ import annotations
 
@@ -37,6 +39,10 @@ class QuarantineRequest(BaseModel):
     parent_slug: str
     source_url: str
     quarantined: bool = True
+
+
+class ResolveParentRequest(BaseModel):
+    name: str = Field(default="", max_length=200)
 
 
 @router.post("/strains/{slug}/review")
@@ -98,3 +104,24 @@ async def quarantine_observation(request: QuarantineRequest):
             status_code=404,
             detail=f"No observation row matches: {e.args[0]}",
         )
+
+
+@router.get("/parents/pending")
+async def list_pending_parents(limit: int = 100):
+    """The unresolved-parent gate queue: raw observations naming parents the
+    KB has never seen, grouped by parent name. These assertions are on file
+    but invisible to every aggregate until the parent is resolved."""
+    return kb.pending_parents(limit=limit)
+
+
+@router.post("/parents/{parent_slug}/resolve")
+async def resolve_pending_parent(parent_slug: str, request: ResolveParentRequest):
+    """Approve a gated parent name: materialize the strain node and release
+    every gated observation citing it. `name` optionally supplies the
+    display name (default: title-cased slug). Restoring individual
+    observations via the quarantine route approves just those rows; this
+    approves the parent as a whole."""
+    try:
+        return kb.resolve_parent(parent_slug, request.name or "")
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e.args[0]))
