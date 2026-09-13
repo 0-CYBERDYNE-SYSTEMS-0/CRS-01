@@ -58,6 +58,12 @@ def _run(query="AK-47", run_id="run-1", raw_dir=None, strain_meta=None):
 
 
 def test_merge_mines_verbatim_summary_with_attribution(tmp_path):
+    # Known parents so the claims merge un-gated (the unresolved-parent
+    # gate would otherwise hide them and drain sources_consulted).
+    with kb.connect() as conn:
+        for parent in ("Colombian", "Mexican", "Thai", "Afghani"):
+            kb.upsert_strain(conn, parent)
+
     raw_dir = tmp_path / "ingest" / "raw" / "run-1"
     _write_raw(raw_dir, [
         # Off-topic row: mentions the name but fails the cannabis gate.

@@ -120,6 +120,15 @@ automatically per test.
   every aggregate; the row stays on file.
 - **An assertion is a parent-SET.** One source URL asserting a 3-way cross is
   ONE assertion of three parents, not three pairwise assertions.
+- **Unresolved parents are gated, not materialized.** An observation naming a
+  parent strain the KB has never seen is recorded but stamped
+  `quarantine_reason='UNRESOLVED_PARENT'`: it enters no aggregate and no
+  strain node is created for the name. The gate clears when the parent
+  becomes a real KB strain through its own research (a deterministic pass in
+  `merge_research_run`), or a curator resolves it
+  (`POST /graph/parents/{slug}/resolve`). Human quarantine/restore decisions
+  (`HUMAN_APPROVED`) always supersede the mechanical gate — a human-restored
+  observation is never re-gated by a later merge.
 
 ### 3.2 Tier semantics
 
@@ -146,7 +155,12 @@ never gates a write. Do not build more machinery on top of it.
 - `POST /graph/strains/{slug}/review` — the only path to `VERIFIED` (or to
   clearing a verdict back to derivation). Stamps `curated_*` provenance.
 - `POST /graph/observations/quarantine` — flag/restore one raw observation;
-  everything re-derives.
+  everything re-derives. Restoring stamps `HUMAN_APPROVED` (exempt from the
+  unresolved-parent gate forever) and materializes the parent node if the
+  observation's parent had none.
+- `GET /graph/parents/pending` — the unresolved-parent gate review queue.
+- `POST /graph/parents/{slug}/resolve` — approve a gated parent name:
+  materialize the node, release its gated observations.
 - Curated tiers outrank machine verdicts across recomputes; clearing a
   curation returns the strain to evidence-derived truth.
 
@@ -183,6 +197,8 @@ GET  /graph/strains/{slug}/evidence                   raw observations behind ev
 GET  /graph/strains/{slug}/conflicts                  derived conflicting parent-set assertions
 POST /graph/strains/{slug}/review                     human tier verdict (only path to VERIFIED)
 POST /graph/observations/quarantine                   flag/restore a raw observation
+GET  /graph/parents/pending                           unresolved-parent gate review queue
+POST /graph/parents/{slug}/resolve                    approve a gated parent name
 GET  /graph/stats                                     KB statistics
 POST /research/submit                                 deep research → ledger → KB merge → neighborhood
 GET  /research/by-strain?slug=                        ledger claims previously persisted for a strain
@@ -335,6 +351,10 @@ ingest path, no tier promotion rules involving time.
    (live tests skipped unless opted in).
 9. **No tier-color drift** — `grep -r "#2DD4BF\|#D4A017\|#94A3B8\|#EF4444"`
    in `frontend/src/components/` returns only token definitions.
+10. **Unresolved-parent gate** — a merge whose claim names an unknown parent
+    creates no node and no edge; the observation lands in
+    `/graph/parents/pending` and stays out of every aggregate until the
+    parent is researched into existence or a curator resolves it.
 
 ---
 

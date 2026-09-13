@@ -83,6 +83,17 @@ def seeded_kb(tmp_path, monkeypatch):
     }
     kb.merge_research_run(fake_run)
 
+    # The unresolved-parent gate (SPEC §3.1) holds observations naming
+    # parents the KB has never seen. Resolve the seeded parents so the KB
+    # below has the live-node/live-edge shape the downstream tests were
+    # written against — the same flow a curator would perform.
+    for slug, name in (
+        ("skva", "SKVA"),
+        ("mazar-i-sharif", "Mazar-I-Sharif"),
+        ("skunk-#1", "Skunk #1"),
+    ):
+        kb.resolve_parent(slug, name=name)
+
     # Also ensure SKVA strain exists in KB (just the parent from sherlock's lineage)
     # merge_research_run already upserts SKVA via the lineage_claims parent_b.
 
