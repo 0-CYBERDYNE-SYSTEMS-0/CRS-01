@@ -101,6 +101,18 @@ export default function SubjectRail({
         <h2 className="font-serif mb-2 text-[30px] italic leading-[1.05] text-[var(--text-primary)]">
           {name}
         </h2>
+        {(center?.data.aliases ?? []).length > 0 && (
+          <div className="mb-3 flex flex-wrap gap-1">
+            {(center?.data.aliases ?? []).map((alias) => (
+              <span
+                key={alias}
+                className="rounded border border-[var(--border)] px-1.5 py-0.5 text-[8px] uppercase tracking-[0.08em] text-[var(--text-faint)]"
+              >
+                {alias}
+              </span>
+            ))}
+          </div>
+        )}
 
         {/* Confidence */}
         <div className="mb-4 flex items-center gap-2">

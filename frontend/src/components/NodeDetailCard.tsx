@@ -22,6 +22,21 @@ import {
 // the wheel, so it never covers the graph.
 // =============================================================================
 
+function parentRoleLabel(
+  response: NeighborhoodResponse,
+  nodeId: string
+): string | null {
+  const edge = response.edges.find(
+    (e) =>
+      e.type === "CHILD_OF" &&
+      ((e.source === response.center_node_id && e.target === nodeId) ||
+        (e.target === response.center_node_id && e.source === nodeId))
+  );
+  const role = edge?.data?.role;
+  if (role === "female" || role === "male") return role;
+  return null;
+}
+
 const BORDER = "#2A4A3A";
 const TEXT_PRIMARY = "#EDE6D8";
 const TEXT_MUTED = "#8B9A8E";
@@ -130,6 +145,19 @@ export default function NodeDetailCard({
         >
           {name}
         </div>
+        {((node.data.aliases as string[] | undefined) ?? []).length > 0 && (
+          <div className="mb-3 flex flex-wrap gap-1">
+            {((node.data.aliases as string[]) ?? []).map((alias) => (
+              <span
+                key={alias}
+                className="rounded border px-1.5 py-0.5 text-[8px] uppercase tracking-[0.08em]"
+                style={{ color: TEXT_FAINT, borderColor: BORDER }}
+              >
+                {alias}
+              </span>
+            ))}
+          </div>
+        )}
 
         {/* Confidence bar */}
         <div className="mb-4 flex items-center gap-2">
@@ -141,7 +169,10 @@ export default function NodeDetailCard({
 
         {/* Metadata grid */}
         <div className="mb-4 grid grid-cols-2 gap-2">
-          <MetaCell label="Relation" value={rel} />
+          <MetaCell
+            label="Relation"
+            value={parentRoleLabel(response, node.id) ?? rel}
+          />
           <MetaCell label="Connections" value={String(edgeCount)} />
           {props.thc_range ? <MetaCell label="THC" value={String(props.thc_range)} /> : null}
           {props.type ? <MetaCell label="Type" value={String(props.type)} /> : null}

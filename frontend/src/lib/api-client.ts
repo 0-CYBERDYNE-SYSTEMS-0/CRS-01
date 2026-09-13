@@ -96,6 +96,7 @@ export async function fetchEdgeEvidence(
         domainCount: e.domain_count ?? 0,
         sourceDomains: Array.isArray(e.source_domains) ? e.source_domains : [],
         avgConfidence: e.avg_confidence ?? 0,
+        role: e.role ?? null,
         observations: (Array.isArray(e.observations) ? e.observations : []).map(
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           (o: any) => ({

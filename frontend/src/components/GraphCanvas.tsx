@@ -261,6 +261,19 @@ function edgeAgreementColor(edgeData: { color?: string } | undefined): string {
   return TIER_ANECDOTAL;
 }
 
+/** Label a satellite: FEMALE/MALE when the lineage edge to the subject agrees. */
+function lineageRoleLabel(response: NeighborhoodResponse, nodeId: string): string {
+  const edge = response.edges.find(
+    (e) =>
+      e.type === "CHILD_OF" &&
+      e.source === response.center_node_id &&
+      e.target === nodeId
+  );
+  const role = edge?.data?.role;
+  if (role === "female" || role === "male") return role.toUpperCase();
+  return "STRAIN";
+}
+
 // =============================================================================
 // Polar Wheel SVG — interactive: hover popovers, relationship highlighting,
 // click-to-select (the detail card renders in the page's context rail).
@@ -439,7 +452,7 @@ function PolarWheel({
               />
             )}
             <text x={img ? h : w / 2} y={13} textAnchor={img ? "start" : "middle"} fontFamily="Inter, sans-serif" fontSize={7.5} letterSpacing="0.12em" fill={TEXT_MUTED} fontWeight={500}>
-              {isClaim ? `CLAIM · ${pct}%` : isPerson ? String(node.data.platform ?? "PERSON").toUpperCase() : "STRAIN"}
+              {isClaim ? `CLAIM · ${pct}%` : isPerson ? String(node.data.platform ?? "PERSON").toUpperCase() : lineageRoleLabel(response, id)}
             </text>
             {isClaim ? (
               <foreignObject x={6} y={18} width={w - 12} height={h - 22}>

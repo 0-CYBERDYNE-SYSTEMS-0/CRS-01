@@ -20,6 +20,13 @@ const eslintConfig = [
       "next-env.d.ts",
     ],
   },
+  {
+    rules: {
+      // Strain images are arbitrary third-party URLs (Wikipedia, seed banks,
+      // forums). next/image remotePatterns cannot enumerate them.
+      "@next/next/no-img-element": "off",
+    },
+  },
 ];
 
 export default eslintConfig;

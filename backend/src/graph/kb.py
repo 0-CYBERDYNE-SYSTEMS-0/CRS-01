@@ -18,6 +18,18 @@ Design notes
   becomes a real KB strain through its own research, or a curator resolves
   it (``resolve_parent``). A human quarantine/restore decision
   (``HUMAN_APPROVED``) always supersedes the mechanical gate.
+- Strain aliases live on ``strains.aliases_json`` (normalized slug strings).
+  Merge and ``recompute()`` resolve an observed name against slug-or-alias
+  so ``GSC`` attaches to ``girl-scout-cookies`` instead of spawning a
+  sibling node. Historical ``lineage_sources.parent_slug`` values are
+  never rewritten (append-only); the alias map is applied at derive time.
+  ``resolve_parent(..., alias_of=canonical)`` is the curator path that
+  records a pending name as an alias rather than materializing it.
+- Parent ``role`` on ``lineage_sources`` is ``female`` / ``male`` /
+  ``parent`` / NULL. NULL means unknown. Role is stored only when the
+  extractor saw an explicit cue in the excerpt — never inferred from
+  parent order. Derived ``lineage_edges.role`` is set only when
+  non-quarantined sources for that (child, parent) agree.
 - Agreement semantics (locked with the product owner 2026-08-19):
     green  = 2+ independent domains agree on the tuple  → COMMUNITY_CONSENSUS
     amber  = a single source asserts it                 → ANECDOTAL
@@ -51,6 +63,34 @@ _DEFAULT_KB = Path(__file__).resolve().parents[2] / "data" / "crs01.db"
 # quarantine — the pre-gate meaning of quarantined=1).
 UNRESOLVED_PARENT = "UNRESOLVED_PARENT"   # mechanical gate, active
 HUMAN_APPROVED = "HUMAN_APPROVED"         # human cleared it; never re-gated
+
+# Explicit parent-role values stored on lineage_sources / lineage_edges.
+# NULL on the row means unknown; "parent" is an explicit unsexed role.
+PARENT_ROLES = ("female", "male", "parent")
+_SEXED_ROLES = frozenset({"female", "male"})
+
+# High-precision aliases seeded onto an *existing* canonical strain.
+# Ambiguous family names (cookies, og, chem) are deliberately absent —
+# those stay ingest-time or curator-only.
+_SAFE_ALIASES: Dict[str, str] = {
+    "gsc": "girl-scout-cookies",
+    "gs-cookies": "girl-scout-cookies",
+    "girl-scout-cookie": "girl-scout-cookies",
+    "chem-dog": "chemdawg",
+    "chem-d": "chemdawg",
+    "chemdog": "chemdawg",
+    "chemdawg-d": "chemdawg",
+    "sour-d": "sour-diesel",
+    "sour-deisel": "sour-diesel",
+    "gdp": "granddaddy-purple",
+    "grandaddy-purple": "granddaddy-purple",
+    "grand-daddy-purple": "granddaddy-purple",
+    "granddaddy-purps": "granddaddy-purple",
+    "northen-lights": "northern-lights",
+    "northern-light": "northern-lights",
+    "ak47": "ak-47",
+    "thin-mint": "thin-mints",
+}
 
 def _slug_display_name(slug: str) -> str:
     """Default display name for a slug with no strains row yet — a best-effort
@@ -180,6 +220,7 @@ def connect() -> sqlite3.Connection:
         (
             ("quarantined", "INTEGER NOT NULL DEFAULT 0"),
             ("quarantine_reason", "TEXT"),
+            ("role", "TEXT"),
         ),
     )
     _ensure_columns(
@@ -199,6 +240,7 @@ def connect() -> sqlite3.Connection:
             ("curated_at", "INTEGER"),
             ("summary_source_url", "TEXT"),
             ("summary_source_title", "TEXT"),
+            ("aliases_json", "TEXT"),
         ),
     )
     _ensure_columns(
@@ -220,6 +262,12 @@ def connect() -> sqlite3.Connection:
             ("llm_model", "TEXT"),
         ),
     )
+    if _ensure_safe_aliases(conn):
+        # Newly attached aliases must flow into derived edges and release
+        # any gated observations that now name a known strain. Do it here
+        # so a fresh clone's seed KB collapses GSC/Chem D without a merge.
+        _run_parent_gate(conn, set())
+        recompute(conn)
     try:
         yield conn
         conn.commit()
@@ -236,6 +284,95 @@ def connect() -> sqlite3.Connection:
 
 def normalize_slug(name: str) -> str:
     return re.sub(r"\s+", "-", (name or "").strip().lower())
+
+
+def _norm_role(role: Optional[str]) -> Optional[str]:
+    """Return a stored role value, or None if missing/invalid."""
+    if not role:
+        return None
+    r = str(role).strip().lower()
+    return r if r in PARENT_ROLES else None
+
+
+def _parse_aliases_json(raw: Any) -> List[str]:
+    if not raw:
+        return []
+    if isinstance(raw, list):
+        vals = raw
+    else:
+        try:
+            vals = json.loads(raw)
+        except (TypeError, json.JSONDecodeError):
+            return []
+    out: List[str] = []
+    for v in vals:
+        s = normalize_slug(str(v))
+        if s:
+            out.append(s)
+    return sorted(set(out))
+
+
+def _dump_aliases(aliases: Iterable[str]) -> str:
+    return json.dumps(_parse_aliases_json(list(aliases)))
+
+
+def _alias_map(conn: sqlite3.Connection) -> Dict[str, str]:
+    """Observed slug → canonical strain slug.
+
+    Canonical slugs map to themselves. An alias maps to its owning strain.
+    First owner wins if two rows somehow share an alias (writes prevent that).
+    """
+    mapping: Dict[str, str] = {}
+    for r in conn.execute("SELECT slug, aliases_json FROM strains"):
+        mapping[r["slug"]] = r["slug"]
+        raw = r["aliases_json"] if "aliases_json" in r.keys() else None
+        for alias in _parse_aliases_json(raw):
+            mapping.setdefault(alias, r["slug"])
+    return mapping
+
+
+def lookup_canonical_slug(conn: sqlite3.Connection, name: str) -> Optional[str]:
+    """Canonical slug if ``name`` is a known strain or an alias of one."""
+    slug = normalize_slug(name)
+    if not slug:
+        return None
+    return _alias_map(conn).get(slug)
+
+
+def _canon_slug(amap: Dict[str, str], slug: str) -> str:
+    return amap.get(slug, slug)
+
+
+def _ensure_safe_aliases(conn: sqlite3.Connection) -> bool:
+    """Attach high-precision aliases to canonical strains that already exist.
+
+    Never creates a strain, never claims an alias that is another strain's
+    slug, never overwrites curator-owned aliases. Returns True when any
+    row actually changed so the caller can recompute.
+    """
+    existing = {
+        r["slug"]: r["aliases_json"] if "aliases_json" in r.keys() else None
+        for r in conn.execute("SELECT slug, aliases_json FROM strains")
+    }
+    if not existing:
+        return False
+    changed = False
+    for alias, canon in _SAFE_ALIASES.items():
+        if canon not in existing:
+            continue
+        if alias in existing and alias != canon:
+            continue
+        current = _parse_aliases_json(existing.get(canon))
+        if alias in current or alias == canon:
+            continue
+        current.append(alias)
+        dumped = _dump_aliases(current)
+        conn.execute(
+            "UPDATE strains SET aliases_json=? WHERE slug=?", (dumped, canon)
+        )
+        existing[canon] = dumped
+        changed = True
+    return changed
 
 
 def _domain(url: str) -> str:
@@ -359,24 +496,33 @@ def record_lineage_observation(
     source_title: str = "",
     engine: str = "",
     excerpt: str = "",
+    role: Optional[str] = None,
 ) -> None:
-    """One raw (child ← parent) observation from one source URL."""
-    child = normalize_slug(child_name)
-    parent = normalize_slug(parent_name)
+    """One raw (child ← parent) observation from one source URL.
+
+    Child/parent names resolve through slug-or-alias so a known alias
+    writes against the canonical strain. Unknown names keep their observed
+    slug (the unresolved-parent gate then holds them). Role is stored only
+    when explicit; ON CONFLICT never overwrites a previously recorded role.
+    """
+    child = lookup_canonical_slug(conn, child_name) or normalize_slug(child_name)
+    parent = lookup_canonical_slug(conn, parent_name) or normalize_slug(parent_name)
     if not child or not parent or child == parent:
         return
+    stored_role = _norm_role(role)
     conn.execute(
         """
         INSERT INTO lineage_sources (child_slug, parent_slug, source_url,
                                      source_title, engine, confidence,
-                                     excerpt, observed_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                                     excerpt, observed_at, role)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(child_slug, parent_slug, source_url) DO UPDATE SET
             confidence = MAX(lineage_sources.confidence, excluded.confidence),
-            excerpt    = COALESCE(NULLIF(excluded.excerpt, ''), lineage_sources.excerpt)
+            excerpt    = COALESCE(NULLIF(excluded.excerpt, ''), lineage_sources.excerpt),
+            role       = COALESCE(lineage_sources.role, excluded.role)
         """,
         (child, parent, source_url, source_title, engine,
-         confidence, excerpt, _now()),
+         confidence, excerpt, _now(), stored_role),
     )
 
 
@@ -463,20 +609,24 @@ def recompute(conn: sqlite3.Connection) -> None:
       CONTRADICTED if any disagreement, else COMMUNITY_CONSENSUS if any
       multi_source edge, else ANECDOTAL.
     """
+    amap = _alias_map(conn)
     rows = conn.execute(
-        "SELECT child_slug, parent_slug, source_url, confidence FROM lineage_sources "
-        "WHERE NOT quarantined"
+        "SELECT child_slug, parent_slug, source_url, confidence, role "
+        "FROM lineage_sources WHERE NOT quarantined"
     ).fetchall()
+
+    def _c(slug: str) -> str:
+        return _canon_slug(amap, slug)
 
     # parent-sets per child → disagreement detection
     child_parents: Dict[str, Set[str]] = {}
     for r in rows:
-        child_parents.setdefault(r["child_slug"], set()).add(r["parent_slug"])
+        child_parents.setdefault(_c(r["child_slug"]), set()).add(_c(r["parent_slug"]))
 
-    # Evidence grouped per (child, parent)
+    # Evidence grouped per canonical (child, parent)
     ev: Dict[Tuple[str, str], List[sqlite3.Row]] = {}
     for r in rows:
-        ev.setdefault((r["child_slug"], r["parent_slug"]), []).append(r)
+        ev.setdefault((_c(r["child_slug"]), _c(r["parent_slug"])), []).append(r)
 
     # Determine disagreement: group observations by source? A single source
     # may assert multiple parents (a 3-way cross is ONE assertion of 3
@@ -488,9 +638,9 @@ def recompute(conn: sqlite3.Connection) -> None:
     # parent sets for the same child are neither equal nor subsets.
     by_child_url: Dict[str, Dict[str, Set[str]]] = {}
     for r in rows:
-        by_child_url.setdefault(r["child_slug"], {}).setdefault(
+        by_child_url.setdefault(_c(r["child_slug"]), {}).setdefault(
             r["source_url"], set()
-        ).add(r["parent_slug"])
+        ).add(_c(r["parent_slug"]))
     disagree_children: Set[str] = set()
     for child, url_map in by_child_url.items():
         sets = [frozenset(v) for v in url_map.values()]
@@ -514,6 +664,7 @@ def recompute(conn: sqlite3.Connection) -> None:
             avg_confidence REAL NOT NULL,
             agreement      TEXT NOT NULL,
             first_seen     INTEGER NOT NULL,
+            role           TEXT,
             PRIMARY KEY (child_slug, parent_slug)
         )
         """
@@ -528,16 +679,30 @@ def recompute(conn: sqlite3.Connection) -> None:
             agreement = "multi_source"
         else:
             agreement = "single_source"
+        sexed = {
+            _norm_role(o["role"] if "role" in o.keys() else None)
+            for o in obs
+        } & _SEXED_ROLES
+        edge_role = next(iter(sexed)) if len(sexed) == 1 else None
+        # first_seen: min observed_at across raw rows that map to this
+        # canonical pair (including historical alias spellings).
+        raw_slugs = [
+            (o["child_slug"], o["parent_slug"]) for o in obs
+        ]
+        first_seen = _now()
+        for cslug, pslug in set(raw_slugs):
+            seen_rows = conn.execute(
+                "SELECT MIN(observed_at) AS t FROM lineage_sources "
+                "WHERE child_slug=? AND parent_slug=?",
+                (cslug, pslug),
+            ).fetchone()
+            if seen_rows and seen_rows["t"] is not None:
+                first_seen = min(first_seen, int(seen_rows["t"]))
         conn.execute(
-            "INSERT INTO lineage_edges_tmp VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO lineage_edges_tmp VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (child, parent, len(urls), len(domains),
              json.dumps(domains), json.dumps(urls[:10]),
-             round(avg_conf, 3), agreement,
-             min(o["observed_at"] for o in
-                 conn.execute(
-                     "SELECT observed_at FROM lineage_sources WHERE child_slug=? AND parent_slug=?",
-                     (child, parent),
-                 ).fetchall()) or _now()),
+             round(avg_conf, 3), agreement, first_seen, edge_role),
         )
     conn.execute("DROP TABLE IF EXISTS lineage_edges")
     conn.execute("ALTER TABLE lineage_edges_tmp RENAME TO lineage_edges")
@@ -549,7 +714,7 @@ def recompute(conn: sqlite3.Connection) -> None:
     history = conn.execute(
         "SELECT DISTINCT child_slug FROM lineage_sources"
     ).fetchall()
-    tier_slugs = set(child_parents) | {r["child_slug"] for r in history}
+    tier_slugs = set(child_parents) | {_c(r["child_slug"]) for r in history}
     for slug in tier_slugs:
         edges = conn.execute(
             "SELECT agreement, avg_confidence FROM lineage_edges WHERE child_slug=?",
@@ -764,7 +929,30 @@ def merge_research_run(run: Dict[str, Any]) -> Dict[str, Any]:
 
         def _touch(name: str) -> None:
             slug = normalize_slug(name)
-            if not slug or slug in seen_strains:
+            if not slug:
+                return
+            canon = lookup_canonical_slug(conn, slug)
+            if canon:
+                if canon in seen_strains:
+                    return
+                seen_strains.add(canon)
+                row = conn.execute(
+                    "SELECT name FROM strains WHERE slug=?", (canon,)
+                ).fetchone()
+                display = row["name"] if row else name
+                m = meta.get(canon) or meta.get(slug) or {}
+                upsert_strain(
+                    conn,
+                    display,
+                    summary=m.get("summary"),
+                    image_url=m.get("image_url"),
+                    thc_range=m.get("thc_range"),
+                    strain_type=m.get("strain_type"),
+                    breeder=m.get("breeder"),
+                )
+                counts["strains"] += 1
+                return
+            if slug in seen_strains:
                 return
             seen_strains.add(slug)
             m = meta.get(slug) or {}
@@ -779,24 +967,25 @@ def merge_research_run(run: Dict[str, Any]) -> Dict[str, Any]:
             )
             counts["strains"] += 1
 
-        def _known(slug: str) -> bool:
-            return conn.execute(
-                "SELECT 1 FROM strains WHERE slug=?", (slug,)
-            ).fetchone() is not None
+        def _known(name: str) -> bool:
+            return lookup_canonical_slug(conn, name) is not None
 
         for c in claims:
             child = c.get("child") or run.get("query") or ""
             parents = [c.get("parent_a"), c.get("parent_b")]
             parents += c.get("extra_parents") or []
             parents = [p for p in parents if p]
+            roles = c.get("parent_roles") or {}
             _touch(child)
             for p in parents:
-                known = _known(normalize_slug(p))
+                known = _known(p)
                 if known:
-                    # Known parents refresh like before. Unknown parents are
-                    # NOT materialized — their observations land in the gate
-                    # until the name proves real (see _run_parent_gate).
+                    # Known parents (slug or alias) refresh like before.
+                    # Unknown parents are NOT materialized — their
+                    # observations land in the gate until the name proves
+                    # real (see _run_parent_gate).
                     _touch(p)
+                role = roles.get(p) or roles.get(normalize_slug(p))
                 record_lineage_observation(
                     conn, child, p,
                     c.get("source_url", ""),
@@ -804,10 +993,15 @@ def merge_research_run(run: Dict[str, Any]) -> Dict[str, Any]:
                     source_title=c.get("source_title", ""),
                     engine=c.get("source_engine", ""),
                     excerpt=c.get("snippet_excerpt", ""),
+                    role=role,
                 )
                 if not known:
+                    written_child = (
+                        lookup_canonical_slug(conn, child) or normalize_slug(child)
+                    )
+                    written_parent = normalize_slug(p)
                     fresh_unknown.add((
-                        normalize_slug(child), normalize_slug(p),
+                        written_child, written_parent,
                         c.get("source_url", ""),
                     ))
                 counts["edges"] += 1
@@ -888,6 +1082,9 @@ def _strain_node(row: sqlite3.Row, relation: str = "related") -> Dict[str, Any]:
         props["type"] = row["strain_type"]
     if row["breeder"]:
         props["breeder"] = row["breeder"]
+    aliases = _parse_aliases_json(
+        row["aliases_json"] if "aliases_json" in row.keys() else None
+    )
     return {
         "id": row["slug"],
         "type": "Strain",
@@ -895,6 +1092,7 @@ def _strain_node(row: sqlite3.Row, relation: str = "related") -> Dict[str, Any]:
         "data": {
             "name": row["name"],
             "slug": row["slug"],
+            "aliases": aliases,
             "trust_tier": row["trust_tier"],
             "confidence": row["confidence"],
             "origin": row["origin"],
@@ -970,10 +1168,16 @@ def _claim_node(row: sqlite3.Row) -> Dict[str, Any]:
 def get_strain(name: str) -> Optional[Dict[str, Any]]:
     slug = normalize_slug(name)
     with connect() as conn:
-        row = conn.execute(
-            "SELECT * FROM strains WHERE slug=? OR name=? COLLATE NOCASE",
-            (slug, name.strip()),
-        ).fetchone()
+        canon = lookup_canonical_slug(conn, slug)
+        if canon:
+            row = conn.execute(
+                "SELECT * FROM strains WHERE slug=?", (canon,)
+            ).fetchone()
+        else:
+            row = conn.execute(
+                "SELECT * FROM strains WHERE slug=? OR name=? COLLATE NOCASE",
+                (slug, name.strip()),
+            ).fetchone()
         return _strain_node(row) if row else None
 
 
@@ -991,6 +1195,9 @@ def get_neighborhood(slug: str, depth: int) -> Dict[str, Any]:
     """
     norm = normalize_slug(slug)
     with connect() as conn:
+        canon = lookup_canonical_slug(conn, norm)
+        if canon:
+            norm = canon
         subject = conn.execute("SELECT * FROM strains WHERE slug=?", (norm,)).fetchone()
         if subject is None:
             raise KeyError(slug)
@@ -1066,6 +1273,7 @@ def get_neighborhood(slug: str, depth: int) -> Dict[str, Any]:
                     "single_source": "amber",
                     "disagreement": "red",
                 }.get(e["agreement"], "amber")
+                role = e["role"] if "role" in e.keys() else None
                 edges.append({
                     "id": f"e::{e['child_slug']}::{e['parent_slug']}",
                     "source": e["child_slug"],
@@ -1079,6 +1287,7 @@ def get_neighborhood(slug: str, depth: int) -> Dict[str, Any]:
                         "sources": json.loads(e["sources"]),
                         "agreement": e["agreement"],
                         "color": color,
+                        "role": role,
                     },
                 })
 
@@ -1204,24 +1413,34 @@ def edge_evidence(child_slug: str) -> List[Dict[str, Any]]:
     Parents that have raw observations but no ``strains`` row are included
     with the slug as display-name fallback. Unknown children yield [].
     """
-    norm = normalize_slug(child_slug)
+    requested = normalize_slug(child_slug)
     with connect() as conn:
+        amap = _alias_map(conn)
+        norm = _canon_slug(amap, requested)
+        # Observations may still name the child (or a parent) by an alias
+        # slug; gather every raw spelling that maps to this canonical child.
+        child_spellings = {norm} | {
+            s for s, c in amap.items() if c == norm
+        }
         edge_rows = {
             e["parent_slug"]: e
             for e in conn.execute(
                 "SELECT * FROM lineage_edges WHERE child_slug=?", (norm,)
             ).fetchall()
         }
+        placeholders = ",".join("?" * len(child_spellings))
         obs = conn.execute(
             "SELECT ls.parent_slug, ls.source_url, ls.source_title, ls.engine, "
-            "ls.confidence, ls.excerpt, ls.observed_at, s.wayback_url "
+            "ls.confidence, ls.excerpt, ls.observed_at, ls.role, s.wayback_url "
             "FROM lineage_sources ls "
             "LEFT JOIN sources s ON s.url = ls.source_url "
-            "WHERE ls.child_slug=? AND NOT ls.quarantined "
+            f"WHERE ls.child_slug IN ({placeholders}) AND NOT ls.quarantined "
             "ORDER BY ls.observed_at DESC, ls.source_url ASC",
-            (norm,),
+            tuple(child_spellings),
         ).fetchall()
-        parent_slugs = sorted({o["parent_slug"] for o in obs} | set(edge_rows))
+        parent_slugs = sorted(
+            {_canon_slug(amap, o["parent_slug"]) for o in obs} | set(edge_rows)
+        )
         parent_names: Dict[str, str] = {}
         if parent_slugs:
             for r in conn.execute(
@@ -1232,13 +1451,15 @@ def edge_evidence(child_slug: str) -> List[Dict[str, Any]]:
 
     obs_by_parent: Dict[str, List[Dict[str, Any]]] = {}
     for o in obs:
-        obs_by_parent.setdefault(o["parent_slug"], []).append({
+        parent = _canon_slug(amap, o["parent_slug"])
+        obs_by_parent.setdefault(parent, []).append({
             "source_url": o["source_url"],
             "source_title": o["source_title"],
             "engine": o["engine"],
             "confidence": o["confidence"],
             "excerpt": o["excerpt"],
             "observed_at": o["observed_at"],
+            "role": o["role"] if "role" in o.keys() else None,
             # Archived copy when archive.org had one — NULL means exactly
             # "no capture on record", never "we didn't check".
             "wayback_url": o["wayback_url"],
@@ -1275,6 +1496,7 @@ def edge_evidence(child_slug: str) -> List[Dict[str, Any]]:
             "domain_count": domain_count,
             "source_domains": source_domains,
             "avg_confidence": avg_confidence,
+            "role": (edge["role"] if edge is not None and "role" in edge.keys() else None),
             "observations": observations,
         })
 
@@ -1295,16 +1517,21 @@ def strain_conflicts(child_slug: str) -> List[Dict[str, Any]]:
     is equal to nor a subset of the other. Mutually-conflicting tuples are
     grouped into one conflict each. Unknown or clean children yield [].
     """
-    norm = normalize_slug(child_slug)
+    requested = normalize_slug(child_slug)
     with connect() as conn:
+        amap = _alias_map(conn)
+        norm = _canon_slug(amap, requested)
         child_row = conn.execute(
             "SELECT name FROM strains WHERE slug=?", (norm,)
         ).fetchone()
         child_name = child_row["name"] if child_row else norm
+        child_spellings = {norm} | {s for s, c in amap.items() if c == norm}
+        placeholders = ",".join("?" * len(child_spellings))
         rows = conn.execute(
             "SELECT parent_slug, source_url, source_title, engine, observed_at "
-            "FROM lineage_sources WHERE child_slug=? AND NOT quarantined",
-            (norm,),
+            f"FROM lineage_sources WHERE child_slug IN ({placeholders}) "
+            "AND NOT quarantined",
+            tuple(child_spellings),
         ).fetchall()
 
         # url → assertion (set of parents) + source metadata.
@@ -1312,7 +1539,7 @@ def strain_conflicts(child_slug: str) -> List[Dict[str, Any]]:
         url_meta: Dict[str, Dict[str, Any]] = {}
         for r in rows:
             url = r["source_url"]
-            url_parents.setdefault(url, set()).add(r["parent_slug"])
+            url_parents.setdefault(url, set()).add(_canon_slug(amap, r["parent_slug"]))
             meta = url_meta.setdefault(
                 url, {"title": "", "engine": "", "observed_at": 0}
             )
@@ -1518,7 +1745,7 @@ def set_observation_quarantined(
             parent_row = conn.execute(
                 "SELECT slug FROM strains WHERE slug=?", (norm_parent,)
             ).fetchone()
-            if parent_row is None:
+            if parent_row is None and lookup_canonical_slug(conn, norm_parent) is None:
                 conn.execute(
                     "INSERT INTO strains (slug, name, origin, first_seen, "
                     "last_researched) VALUES (?, ?, 'resolved', ?, ?) "
@@ -1605,27 +1832,118 @@ def _run_parent_gate(
             "AND (quarantine_reason IS NULL OR quarantine_reason <> ?)",
             (UNRESOLVED_PARENT, child_slug, parent_slug, url, HUMAN_APPROVED),
         )
-    conn.execute(
-        "UPDATE lineage_sources SET quarantined=0, quarantine_reason=NULL "
-        "WHERE quarantined=1 AND quarantine_reason=? "
-        "AND parent_slug IN (SELECT slug FROM strains)",
-        (UNRESOLVED_PARENT,),
-    )
+    known = set(_alias_map(conn))
+    if known:
+        conn.execute(
+            "UPDATE lineage_sources SET quarantined=0, quarantine_reason=NULL "
+            f"WHERE quarantined=1 AND quarantine_reason=? "
+            f"AND parent_slug IN ({','.join('?' * len(known))})",
+            (UNRESOLVED_PARENT, *known),
+        )
     _sync_claim_gate(conn)
 
 
-def resolve_parent(parent_slug: str, name: str = "") -> Dict[str, Any]:
+def _owner_of_alias(conn: sqlite3.Connection, alias: str) -> Optional[str]:
+    """Canonical slug that already claims ``alias``, if any."""
+    return _alias_map(conn).get(normalize_slug(alias))
+
+
+def _attach_alias(conn: sqlite3.Connection, canon_slug: str, alias: str) -> None:
+    """Add ``alias`` to ``canon_slug``'s aliases_json. Raises ValueError on
+    conflict with another strain's slug or alias."""
+    alias_slug = normalize_slug(alias)
+    if not alias_slug:
+        raise ValueError("alias is required")
+    if alias_slug == canon_slug:
+        return
+    other = conn.execute(
+        "SELECT slug FROM strains WHERE slug=?", (alias_slug,)
+    ).fetchone()
+    if other is not None:
+        raise ValueError(
+            f"{alias_slug!r} is already a strain slug; aliasing would hide it"
+        )
+    owner = _owner_of_alias(conn, alias_slug)
+    if owner and owner != canon_slug:
+        raise ValueError(
+            f"{alias_slug!r} is already an alias of {owner!r}"
+        )
+    row = conn.execute(
+        "SELECT aliases_json FROM strains WHERE slug=?", (canon_slug,)
+    ).fetchone()
+    if row is None:
+        raise KeyError(canon_slug)
+    current = _parse_aliases_json(row["aliases_json"])
+    if alias_slug in current:
+        return
+    current.append(alias_slug)
+    conn.execute(
+        "UPDATE strains SET aliases_json=? WHERE slug=?",
+        (_dump_aliases(current), canon_slug),
+    )
+
+
+def set_strain_aliases(
+    slug: str,
+    add: Optional[Iterable[str]] = None,
+    remove: Optional[Iterable[str]] = None,
+) -> Dict[str, Any]:
+    """Curator add/remove of aliases on an existing strain.
+
+    Adding an alias that currently sits in the unresolved-parent queue
+    releases those observations (the name now points at a real strain).
+    Raw ``parent_slug`` values are not rewritten. Raises KeyError for an
+    unknown strain and ValueError for a conflicting alias.
+    """
+    norm = normalize_slug(slug)
+    if not norm:
+        raise ValueError("slug is required")
+    with connect() as conn:
+        canon = lookup_canonical_slug(conn, norm) or norm
+        row = conn.execute("SELECT * FROM strains WHERE slug=?", (canon,)).fetchone()
+        if row is None:
+            raise KeyError(norm)
+        norm = canon
+        for alias in add or []:
+            _attach_alias(conn, norm, alias)
+        if remove:
+            current = _parse_aliases_json(row["aliases_json"])
+            drop = {normalize_slug(a) for a in remove if normalize_slug(a)}
+            kept = [a for a in current if a not in drop]
+            conn.execute(
+                "UPDATE strains SET aliases_json=? WHERE slug=?",
+                (_dump_aliases(kept) if kept else None, norm),
+            )
+        _run_parent_gate(conn, set())
+        recompute(conn)
+        updated = conn.execute(
+            "SELECT * FROM strains WHERE slug=?", (norm,)
+        ).fetchone()
+    return _strain_node(updated)
+
+
+def resolve_parent(
+    parent_slug: str, name: str = "", alias_of: str = ""
+) -> Dict[str, Any]:
     """Human approval of a gated parent — the curation path out of the gate.
 
-    Creates the strains row when the name has never materialized (origin
-    ``'resolved'``), releases every UNRESOLVED_PARENT observation citing
-    this parent, and re-derives. Plain human quarantines (reason NULL) are
-    untouched: approving that the name is real is not vouching for
-    quarantined evidence. Raises KeyError when nothing is pending.
+    Default: creates the strains row when the name has never materialized
+    (origin ``'resolved'``), releases every UNRESOLVED_PARENT observation
+    citing this parent, and re-derives.
+
+    ``alias_of``: treat the pending name as an alias of an existing strain
+    instead of materializing a sibling node. Raw observation slugs stay
+    as recorded; ``recompute()`` joins through the alias map.
+
+    Plain human quarantines (reason NULL) are untouched: approving that
+    the name is real is not vouching for quarantined evidence. Raises
+    KeyError when nothing is pending (or the alias target is unknown)
+    and ValueError when aliasing would hide another strain.
     """
     norm = normalize_slug(parent_slug)
     if not norm:
         raise ValueError("parent_slug is required")
+    target = normalize_slug(alias_of) if alias_of else ""
     with connect() as conn:
         cur = conn.execute(
             "UPDATE lineage_sources SET quarantined=0, quarantine_reason=NULL "
@@ -1636,31 +1954,53 @@ def resolve_parent(parent_slug: str, name: str = "") -> Dict[str, Any]:
             raise KeyError(
                 f"no unresolved-parent observations pending for {norm!r}"
             )
-        display = (name or "").strip() or _slug_display_name(norm)
-        conn.execute(
-            "INSERT INTO strains (slug, name, origin, first_seen, "
-            "last_researched) VALUES (?, ?, 'resolved', ?, ?) "
-            "ON CONFLICT(slug) DO NOTHING",
-            (norm, display, _now(), _now()),
-        )
+        if target:
+            owner = conn.execute(
+                "SELECT slug FROM strains WHERE slug=?", (target,)
+            ).fetchone()
+            if owner is None:
+                raise KeyError(
+                    f"alias target {target!r} is not a KB strain"
+                )
+            _attach_alias(conn, target, norm)
+            display = conn.execute(
+                "SELECT name FROM strains WHERE slug=?", (target,)
+            ).fetchone()["name"]
+            canon = target
+        else:
+            display = (name or "").strip() or _slug_display_name(norm)
+            conn.execute(
+                "INSERT INTO strains (slug, name, origin, first_seen, "
+                "last_researched) VALUES (?, ?, 'resolved', ?, ?) "
+                "ON CONFLICT(slug) DO NOTHING",
+                (norm, display, _now(), _now()),
+            )
+            canon = norm
         _sync_claim_gate(conn)
         recompute(conn)
         row = conn.execute(
-            "SELECT * FROM strains WHERE slug=?", (norm,)
+            "SELECT * FROM strains WHERE slug=?", (canon,)
         ).fetchone()
-        children = sorted(
-            r["child_slug"]
+        amap = _alias_map(conn)
+        parent_spellings = {canon} | {s for s, c in amap.items() if c == canon}
+        children = sorted({
+            _canon_slug(amap, r["child_slug"])
             for r in conn.execute(
-                "SELECT DISTINCT child_slug FROM lineage_sources "
-                "WHERE parent_slug=? AND NOT quarantined",
-                (norm,),
+                f"SELECT DISTINCT child_slug FROM lineage_sources "
+                f"WHERE parent_slug IN ({','.join('?' * len(parent_spellings))}) "
+                "AND NOT quarantined",
+                tuple(parent_spellings),
             ).fetchall()
-        )
+        })
     return {
         "parent": _strain_summary_row(row) if row else None,
         "display_name": display,
         "resolved_observations": cur.rowcount,
         "children": children,
+        "alias_of": target or None,
+        "aliases": _parse_aliases_json(
+            row["aliases_json"] if row is not None and "aliases_json" in row.keys() else None
+        ),
     }
 
 
@@ -1862,12 +2202,23 @@ def search_strains(q: str, limit: int = 8) -> Dict[str, Any]:
     for r in rows:
         name = (r["name"] or "").lower()
         slug = r["slug"]
+        aliases = _parse_aliases_json(
+            r["aliases_json"] if "aliases_json" in r.keys() else None
+        )
         score = 0
-        if needle == name or needle == slug:
+        if needle == name or needle == slug or needle in aliases:
             score = 3
-        elif name.startswith(needle) or slug.startswith(needle):
+        elif (
+            name.startswith(needle)
+            or slug.startswith(needle)
+            or any(a.startswith(needle) for a in aliases)
+        ):
             score = 2
-        elif needle in name or needle in slug:
+        elif (
+            needle in name
+            or needle in slug
+            or any(needle in a for a in aliases)
+        ):
             score = 1
         if score > 0:
             scored.append((score, {
