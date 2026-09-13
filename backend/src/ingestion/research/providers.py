@@ -18,13 +18,16 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Protocol
+from functools import wraps
+from typing import Any, Callable, Dict, List, Optional, Protocol
 import logging
 import re
 from urllib.parse import unquote
 
 import httpx
 import time
+
+from .provider_cache import cached_payload
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +58,45 @@ class ResearchProvider(Protocol):
     def search(self, query: str, limit: int = 10) -> List[ProviderResult]: ...
 
 
+def cached_search(
+    search_fn: Callable[..., List[ProviderResult]],
+) -> Callable[..., List[ProviderResult]]:
+    """Skip HTTP on a TTL hit. Empty live results are not stored."""
+
+    @wraps(search_fn)
+    def wrapped(self: Any, query: str, limit: int = 10) -> List[ProviderResult]:
+        def fetch() -> List[Dict[str, Any]]:
+            rows = search_fn(self, query, limit=limit)
+            return [r.to_dict() for r in rows]
+
+        payload = cached_payload(
+            provider=getattr(self, "name", "unknown"),
+            kind="search",
+            query=query,
+            extra=str(limit),
+            fetch=fetch,
+        )
+        if not payload:
+            return []
+        out: List[ProviderResult] = []
+        for d in payload:
+            if not isinstance(d, dict):
+                continue
+            out.append(
+                ProviderResult(
+                    title=d.get("title") or "",
+                    url=d.get("url") or "",
+                    snippet=d.get("snippet") or "",
+                    source=d.get("source") or getattr(self, "name", ""),
+                    score=d.get("score"),
+                    image_url=d.get("image_url"),
+                )
+            )
+        return out
+
+    return wrapped
+
+
 # ---------------------------------------------------------------------------
 # Tavily — billed, breadth-first web search (Bearer header)
 # ---------------------------------------------------------------------------
@@ -66,6 +108,7 @@ class TavilyProvider:
         self.api_key = api_key
         self.timeout = timeout
 
+    @cached_search
     def search(self, query: str, limit: int = 10) -> List[ProviderResult]:
         try:
             with httpx.Client(timeout=self.timeout) as client:
@@ -160,6 +203,7 @@ class PerplexityProvider:
         self.api_key = api_key
         self.timeout = timeout
 
+    @cached_search
     def search(self, query: str, limit: int = 10) -> List[ProviderResult]:
         global _pplx_transient_block_until
         if perplexity_is_disabled():
@@ -268,6 +312,7 @@ class DuckDuckGoProvider:
     def __init__(self, timeout: float = 12.0) -> None:
         self.timeout = timeout
 
+    @cached_search
     def search(self, query: str, limit: int = 10) -> List[ProviderResult]:
         try:
             with httpx.Client(timeout=self.timeout, headers={"User-Agent": _DDG_UA}) as client:
@@ -345,6 +390,7 @@ class WikipediaProvider:
                 time.sleep(1)
         return None
 
+    @cached_search
     def search(self, query: str, limit: int = 10) -> List[ProviderResult]:
         try:
             with httpx.Client(

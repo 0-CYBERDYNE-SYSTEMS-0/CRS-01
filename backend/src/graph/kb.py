@@ -339,6 +339,35 @@ def lookup_canonical_slug(conn: sqlite3.Connection, name: str) -> Optional[str]:
     return _alias_map(conn).get(slug)
 
 
+def canonical_identity(name: str) -> str:
+    """Slug used as a cache/search identity.
+
+    Known strain or alias → owning slug. Unknown names → ``normalize_slug``
+    of the observed string. Never creates a strain.
+    """
+    slug = normalize_slug(name)
+    if not slug:
+        return ""
+    with connect() as conn:
+        return lookup_canonical_slug(conn, name) or slug
+
+
+def canonical_display_name(name: str) -> str:
+    """Canonical strain's stored display name if known, else ``name``."""
+    if not (name or "").strip():
+        return name
+    with connect() as conn:
+        slug = lookup_canonical_slug(conn, name)
+        if not slug:
+            return name
+        row = conn.execute(
+            "SELECT name FROM strains WHERE slug=?", (slug,)
+        ).fetchone()
+        if row and row["name"]:
+            return row["name"]
+    return name
+
+
 def _canon_slug(amap: Dict[str, str], slug: str) -> str:
     return amap.get(slug, slug)
 

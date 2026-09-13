@@ -43,9 +43,11 @@ videos/
 /crs01-*.html
 
 # KB runtime artifacts — the .db and ingest ledger are tracked on purpose;
-# raw fetch payloads and snapshot archives are local-only
+# raw fetch payloads, snapshot archives, and the disposable provider cache
+# are local-only
 backend/data/raw/
 backend/data/snapshots/
+backend/data/provider_cache.db
 *.db-wal
 *.db-shm
 *.db-journal
