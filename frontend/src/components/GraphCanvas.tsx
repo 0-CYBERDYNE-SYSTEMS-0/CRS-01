@@ -75,9 +75,9 @@ function bucketNodes(
   const centerId = response.center_node_id;
   const disagreements = new Set<string>();
   for (const e of response.edges) {
-    if ((e.data as any)?.agreement === "disagreement") {
-      disagreements.add((e as any).source);
-      disagreements.add((e as any).target);
+    if (e.data?.agreement === "disagreement") {
+      disagreements.add(e.source);
+      disagreements.add(e.target);
     }
   }
 
@@ -86,7 +86,7 @@ function bucketNodes(
   if (!showDisagreements) {
     const nodeAgreements = new Map<string, string[]>();
     for (const e of response.edges) {
-      const ag = (e.data as any)?.agreement || "single_source";
+      const ag = e.data?.agreement || "single_source";
       for (const nid of [e.source, e.target]) {
         if (!nodeAgreements.has(nid)) nodeAgreements.set(nid, []);
         nodeAgreements.get(nid)!.push(ag);
@@ -254,8 +254,8 @@ export function computeWheelData(
 // Trust-tier palette — getTrustTierColor is the only tier→hex path.
 // =============================================================================
 
-function edgeAgreementColor(edgeData: Record<string, unknown> | undefined): string {
-  const c = (edgeData as any)?.color;
+function edgeAgreementColor(edgeData: { color?: string } | undefined): string {
+  const c = edgeData?.color;
   if (c === "green") return TIER_COMMUNITY;
   if (c === "red") return TIER_CONTRADICTED;
   return TIER_ANECDOTAL;
@@ -387,7 +387,7 @@ function PolarWheel({
         const node = response.nodes.find((n) => n.id === id);
         if (!node) return null;
         const edges = response.edges.filter((e) => e.source === id || e.target === id);
-        const cls = edgeAgreementColor((edges[0]?.data as any) || {});
+        const cls = edgeAgreementColor(edges[0]?.data);
         const isHot = hoveredId === id || neighbors.has(id);
         return (
           <line
@@ -629,7 +629,7 @@ export default function GraphCanvas({
   );
 
   const disagreementCount = response.edges.filter(
-    (e) => (e.data as any)?.agreement === "disagreement"
+    (e) => e.data?.agreement === "disagreement"
   ).length;
 
   // ── Zoom / pan helpers ─────────────────────────────────────────────

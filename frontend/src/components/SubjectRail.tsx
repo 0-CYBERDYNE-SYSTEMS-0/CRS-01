@@ -47,15 +47,13 @@ export default function SubjectRail({
 
   const engines = new Set<string>();
   for (const e of response.edges) {
-    if ((e.data as any)?.source_domains) {
-      for (const d of (e.data as any).source_domains) engines.add(d);
-    }
+    for (const d of e.data?.source_domains ?? []) engines.add(d);
   }
   // Audit drill-down: when the subject's verdict is CONTRADICTED — or any
   // edge disagrees — expose WHO says WHAT straight in the rail.
   const contradicted = tier === "CONTRADICTED";
   const hasDisagreements = response.edges.some(
-    (e) => (e.data as any)?.agreement === "disagreement"
+    (e) => e.data?.agreement === "disagreement"
   );
   const allClaims = response.nodes.filter((n) => n.type === "Claim");
   const totalClaimCount = allClaims.length;

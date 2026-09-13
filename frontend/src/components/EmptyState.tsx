@@ -1,12 +1,12 @@
 "use client";
 
-import { getTrustTierColor } from "@/lib/types";
+import { getTrustTierColor, type TrustTier } from "@/lib/types";
 
 type SuggestionShape = {
   slug: string;
   name: string;
   confidence?: number;
-  trust_tier?: string;
+  trust_tier?: TrustTier;
 };
 
 interface EmptyStateProps {
@@ -69,9 +69,7 @@ export default function EmptyState({
         {suggestions && suggestions.length > 0 && onSuggestion && (
           <div className="flex flex-wrap justify-center gap-1.5">
             {suggestions.slice(0, 6).map((s) => {
-              const color = getTrustTierColor(
-                (s.trust_tier as any) ?? "ANECDOTAL"
-              );
+              const color = getTrustTierColor(s.trust_tier ?? "ANECDOTAL");
               return (
                 <button
                   key={s.slug}

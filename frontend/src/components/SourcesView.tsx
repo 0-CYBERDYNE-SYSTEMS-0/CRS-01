@@ -44,7 +44,7 @@ export default function SourcesView({
   const lineageEdges = response.edges.filter((e) => e.type === "CHILD_OF");
   const uniqueUrls = new Set<string>();
   for (const e of lineageEdges) {
-    for (const u of ((e.data as any)?.sources ?? [])) uniqueUrls.add(u);
+    for (const u of e.data?.sources ?? []) uniqueUrls.add(u);
   }
 
   return (

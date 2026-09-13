@@ -65,7 +65,13 @@ export interface NeighborhoodEdge {
   source: string;
   target: string;
   type: string;
-  data?: Record<string, unknown>;
+  data?: {
+    agreement?: string;
+    color?: string;
+    sources?: string[];
+    source_domains?: string[];
+    [key: string]: unknown;
+  };
 }
 
 export interface NeighborhoodResponse {

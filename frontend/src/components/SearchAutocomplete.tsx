@@ -150,7 +150,7 @@ export default function SearchAutocomplete({
               className="flex w-full items-center justify-between px-3 py-2 text-left text-xs hover:bg-[var(--bg-deep)]"
             >
               <span className="text-[var(--text-muted)]">
-                No matches for <span className="text-[var(--text-primary)]">"{value}"</span>
+                No matches for <span className="text-[var(--text-primary)]">{`"${value}"`}</span>
               </span>
               <span className="text-[10px] uppercase tracking-[0.08em] text-[var(--accent)]">
                 Try anyway →

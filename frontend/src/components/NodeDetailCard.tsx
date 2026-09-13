@@ -66,7 +66,7 @@ export default function NodeDetailCard({
 
   const edgeSources = response.edges
     .filter((e) => e.source === node.id || e.target === node.id)
-    .flatMap((e) => ((e.data as any)?.sources ?? []) as string[]);
+    .flatMap((e) => e.data?.sources ?? []);
   const uniqueSources = Array.from(new Set(edgeSources));
   const visibleSources = showAllSources ? uniqueSources : uniqueSources.slice(0, 3);
 
