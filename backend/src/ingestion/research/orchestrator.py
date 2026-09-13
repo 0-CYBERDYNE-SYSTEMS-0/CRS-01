@@ -360,6 +360,12 @@ class ResearchOrchestrator:
             c.parent_a = canonical_strain_name(c.parent_a)
             c.parent_b = canonical_strain_name(c.parent_b)
             c.extra_parents = [canonical_strain_name(p) for p in c.extra_parents]
+            if c.parent_roles:
+                c.parent_roles = {
+                    canonical_strain_name(k): v
+                    for k, v in c.parent_roles.items()
+                    if v in ("female", "male", "parent")
+                }
             if is_junk_child_name(c.child, query):
                 continue
             parents = [c.parent_a, c.parent_b, *c.extra_parents]
@@ -460,6 +466,7 @@ class ResearchOrchestrator:
                             source_engine=row["source_engine"],
                             snippet_excerpt=row["snippet_excerpt"],
                             confidence=row["confidence"],
+                            parent_roles=row.get("parent_roles") or {},
                         )
                     )
                 self._ingest_claims(run, query, llm_claims, seen_tuples)

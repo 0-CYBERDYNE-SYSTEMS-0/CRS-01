@@ -23,6 +23,7 @@ export interface NeighborhoodNode {
   data: {
     name?: string;
     slug?: string;
+    aliases?: string[];
     handle?: string;
     platform?: string;
     display_name?: string;
@@ -70,6 +71,8 @@ export interface NeighborhoodEdge {
     color?: string;
     sources?: string[];
     source_domains?: string[];
+    /** female | male | parent when non-quarantined sources agree; unset otherwise. */
+    role?: "female" | "male" | "parent" | null;
     [key: string]: unknown;
   };
 }
@@ -133,6 +136,7 @@ export interface EvidenceEdge {
   domainCount: number;
   sourceDomains: string[];
   avgConfidence: number;
+  role?: "female" | "male" | "parent" | null;
   observations: EvidenceObservation[];
 }
 
@@ -184,6 +188,7 @@ export interface StrainNodeResponse {
   data: {
     name: string;
     slug: string;
+    aliases?: string[];
     trust_tier: TrustTier;
     confidence: number;
     origin: string;

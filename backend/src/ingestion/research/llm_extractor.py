@@ -37,6 +37,10 @@ You are a rigorous cannabis-cultivar research assistant. You extract lineage
 - A cross may have 2 or 3 (occasionally more) parents — report all of them.
 - Each lineage row MUST cite a source_index (0-based) into the provided results.
 - confidence: 0.0-1.0 — how explicitly the source states this parentage.
+- parent_roles is optional: a map of parent name → "female" | "male" ONLY
+  when the cited source explicitly states sex/role (mother/father, female
+  parent, pollen donor, seed parent). Never infer from left/right order.
+  Omit the field when the source does not say.
 - metadata describes the SUBJECT strain only; omit fields the sources don't state.
 - Respond with strict JSON only, no prose, no markdown fences.\
 """
@@ -109,7 +113,8 @@ def _build_user_prompt(query: str, results: List[Dict[str, Any]]) -> str:
         f"other strain named in the evidence, each with its own source_index).\n"
         f"Also extract subject metadata when stated.\n\n{evidence}\n\n"
         'Return JSON: {"subject": str, "lineage": [{"child": str, '
-        '"parents": [str, ...], "evidence": str, "source_index": int, '
+        '"parents": [str, ...], "parent_roles": {"Name": "female"|"male"}, '
+        '"evidence": str, "source_index": int, '
         '"confidence": float}], "metadata": {"summary": str, '
         '"strain_type": str, "thc_range": str, "breeder": str, '
         '"image_url": str}}'
@@ -149,6 +154,18 @@ def _parse_response(raw: str, query: str, results: List[Dict[str, Any]]) -> LLME
             conf = float(row.get("confidence", 0.6))
         except (TypeError, ValueError):
             conf = 0.6
+        parent_roles: Dict[str, str] = {}
+        raw_roles = row.get("parent_roles") or {}
+        if isinstance(raw_roles, dict):
+            allowed = {p.lower(): p for p in parents}
+            for k, v in raw_roles.items():
+                name = str(k).strip()
+                role = str(v).strip().lower()
+                if role not in ("female", "male"):
+                    continue
+                match = allowed.get(name.lower())
+                if match:
+                    parent_roles[match] = role
         out.lineage.append({
             "child": child,
             "parents": parents[:4],
@@ -157,6 +174,7 @@ def _parse_response(raw: str, query: str, results: List[Dict[str, Any]]) -> LLME
             "source_engine": str(src.get("source", src.get("engine", "llm"))),
             "snippet_excerpt": str(row.get("evidence", ""))[:240],
             "confidence": max(0.05, min(0.98, conf)),
+            "parent_roles": parent_roles,
         })
 
     meta = data.get("metadata") or {}

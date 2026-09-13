@@ -68,6 +68,9 @@ class LineageClaim:
     # Backend-computed trust tier (see orchestrator.claim_tier). VERIFIED is
     # never set here — it is reserved for human curation (2026-08-19).
     tier: Optional[str] = None
+    # parent display-name → female|male|parent. Only filled when the
+    # excerpt states the role explicitly; never inferred from order.
+    parent_roles: Dict[str, str] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -82,6 +85,7 @@ class LineageClaim:
             "raw_text": self.raw_text,
             "extra_parents": self.extra_parents,
             "tier": self.tier,
+            "parent_roles": self.parent_roles,
         }
 
 
@@ -111,6 +115,48 @@ def _looks_like_name(token: str) -> bool:
     if any(w in blacklist for w in tl):
         return False
     return True
+
+
+def infer_parent_role(parent: str, text: str) -> Optional[str]:
+    """Return female/male when ``text`` states the role of ``parent`` explicitly.
+
+    Order in an ``X × Y`` pair is not a signal. Unsexed words like
+    "parent" alone are ignored. Missing/blank → None.
+    """
+    if not parent or not text:
+        return None
+    n = re.escape(parent.strip())
+    if not n:
+        return None
+    female = (
+        rf"(?:female\s+parent|seed\s+parent|mother|dam)"
+    )
+    male = (
+        rf"(?:male\s+parent|pollen\s+(?:parent|donor)|father|sire)"
+    )
+    patterns = (
+        (rf"{n}\s*\(\s*(?:female|mother|dam|seed\s*parent)\s*\)", "female"),
+        (rf"{n}\s*\(\s*(?:male|father|sire|pollen\s*(?:parent|donor))\s*\)", "male"),
+        (rf"{female}\s*[:\s]+{n}\b", "female"),
+        (rf"{male}\s*[:\s]+{n}\b", "male"),
+        (rf"{n}\s+(?:is|as)\s+the\s+{female}", "female"),
+        (rf"{n}\s+(?:is|as)\s+the\s+{male}", "male"),
+        (rf"(?:mothered|mother)\s+by\s+{n}\b", "female"),
+        (rf"fathered\s+by\s+{n}\b", "male"),
+    )
+    for pat, role in patterns:
+        if re.search(pat, text, re.I):
+            return role
+    return None
+
+
+def _roles_for_parents(parents: List[str], text: str) -> Dict[str, str]:
+    out: Dict[str, str] = {}
+    for p in parents:
+        role = infer_parent_role(p, text)
+        if role:
+            out[p] = role
+    return out
 
 
 def _clean_name(name: str) -> str:
@@ -198,6 +244,8 @@ def extract_lineage(
             if "×" in m.group(0) or "crossed" in m.group(0).lower():
                 base += 0.1
 
+            extras: List[str] = []
+            parent_roles = _roles_for_parents([parent_a, parent_b, *extras], text)
             claims.append(
                 LineageClaim(
                     child=child_hint or "",
@@ -209,6 +257,7 @@ def extract_lineage(
                     snippet_excerpt=excerpt[:240],
                     confidence=min(0.95, base),
                     raw_text=m.group(0),
+                    parent_roles=parent_roles,
                 )
             )
 
