@@ -102,7 +102,12 @@ CREATE TABLE IF NOT EXISTS research_runs (
     providers_used TEXT,
     sources_count  INTEGER DEFAULT 0,
     claims_count   INTEGER DEFAULT 0,
-    error          TEXT
+    error          TEXT,
+    llm_calls          INTEGER DEFAULT 0,
+    prompt_tokens      INTEGER DEFAULT 0,
+    completion_tokens  INTEGER DEFAULT 0,
+    total_tokens       INTEGER DEFAULT 0,
+    llm_model          TEXT
 );
 
 CREATE INDEX IF NOT EXISTS ix_lineage_child ON lineage_sources (child_slug);
@@ -173,6 +178,17 @@ def connect() -> sqlite3.Connection:
         (
             ("wayback_url", "TEXT"),
             ("archived_at", "INTEGER"),
+        ),
+    )
+    _ensure_columns(
+        conn,
+        "research_runs",
+        (
+            ("llm_calls", "INTEGER DEFAULT 0"),
+            ("prompt_tokens", "INTEGER DEFAULT 0"),
+            ("completion_tokens", "INTEGER DEFAULT 0"),
+            ("total_tokens", "INTEGER DEFAULT 0"),
+            ("llm_model", "TEXT"),
         ),
     )
     try:
@@ -361,20 +377,38 @@ def record_run(
     sources_count: int = 0,
     claims_count: int = 0,
     error: Optional[str] = None,
+    usage: Optional[Dict[str, Any]] = None,
 ) -> None:
+    """Insert/refresh a research_runs row. ``usage`` is the orchestrator's
+    accumulated LLM spend ({calls, model, prompt_tokens, completion_tokens,
+    total_tokens}); stored so spend survives even for runs that errored."""
+    usage = usage if isinstance(usage, dict) else {}
     conn.execute(
         """
         INSERT INTO research_runs (id, query, started_at, completed_at,
                                    providers_used, sources_count,
-                                   claims_count, error)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                                   claims_count, error,
+                                   llm_calls, prompt_tokens,
+                                   completion_tokens, total_tokens,
+                                   llm_model)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
             completed_at = excluded.completed_at,
             claims_count = excluded.claims_count,
-            error        = excluded.error
+            error        = excluded.error,
+            llm_calls         = excluded.llm_calls,
+            prompt_tokens     = excluded.prompt_tokens,
+            completion_tokens = excluded.completion_tokens,
+            total_tokens      = excluded.total_tokens,
+            llm_model         = excluded.llm_model
         """,
         (run_id, query, started_at, completed_at,
-         json.dumps(providers_used or []), sources_count, claims_count, error),
+         json.dumps(providers_used or []), sources_count, claims_count, error,
+         int(usage.get("calls", 0) or 0),
+         int(usage.get("prompt_tokens", 0) or 0),
+         int(usage.get("completion_tokens", 0) or 0),
+         int(usage.get("total_tokens", 0) or 0),
+         usage.get("model") or None),
     )
 
 
@@ -771,6 +805,7 @@ def merge_research_run(run: Dict[str, Any]) -> Dict[str, Any]:
             sources_count=len(run.get("sources_visited") or []),
             claims_count=len(claims),
             error=run.get("error"),
+            usage=run.get("llm_usage"),
         )
         counts["sources"] = len(run.get("sources_visited") or [])
         recompute(conn)
@@ -1443,6 +1478,34 @@ def set_observation_quarantined(
 # these accessors make it readable again.
 # ---------------------------------------------------------------------------
 
+def _run_row_dict(r: sqlite3.Row) -> Dict[str, Any]:
+    def _int(key: str) -> int:
+        try:
+            return int(r[key] or 0)
+        except (IndexError, KeyError):
+            return 0
+
+    return {
+        "id": r["id"],
+        "query": r["query"],
+        "started_at": r["started_at"],
+        "completed_at": r["completed_at"],
+        "providers_used": json.loads(r["providers_used"] or "[]"),
+        "sources_count": r["sources_count"],
+        "claims_count": r["claims_count"],
+        "error": r["error"],
+        # LLM spend for the run — 0 when the row predates the columns or
+        # no LLM was configured (absent is absent, honestly).
+        "llm_usage": {
+            "calls": _int("llm_calls"),
+            "model": r["llm_model"] if "llm_model" in r.keys() else None,
+            "prompt_tokens": _int("prompt_tokens"),
+            "completion_tokens": _int("completion_tokens"),
+            "total_tokens": _int("total_tokens"),
+        },
+    }
+
+
 def list_research_runs(limit: int = 20, offset: int = 0) -> Dict[str, Any]:
     """Recent research runs, newest first, with providers_used parsed."""
     limit = max(1, min(int(limit), 100))
@@ -1460,19 +1523,7 @@ def list_research_runs(limit: int = 20, offset: int = 0) -> Dict[str, Any]:
         "total": total,
         "limit": limit,
         "offset": offset,
-        "runs": [
-            {
-                "id": r["id"],
-                "query": r["query"],
-                "started_at": r["started_at"],
-                "completed_at": r["completed_at"],
-                "providers_used": json.loads(r["providers_used"] or "[]"),
-                "sources_count": r["sources_count"],
-                "claims_count": r["claims_count"],
-                "error": r["error"],
-            }
-            for r in rows
-        ],
+        "runs": [_run_row_dict(r) for r in rows],
     }
 
 
@@ -1484,16 +1535,7 @@ def get_research_run(run_id: str) -> Optional[Dict[str, Any]]:
         ).fetchone()
     if r is None:
         return None
-    return {
-        "id": r["id"],
-        "query": r["query"],
-        "started_at": r["started_at"],
-        "completed_at": r["completed_at"],
-        "providers_used": json.loads(r["providers_used"] or "[]"),
-        "sources_count": r["sources_count"],
-        "claims_count": r["claims_count"],
-        "error": r["error"],
-    }
+    return _run_row_dict(r)
 
 
 def list_strains(limit: int = 50, offset: int = 0) -> Dict[str, Any]:

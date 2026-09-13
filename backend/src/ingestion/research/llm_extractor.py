@@ -48,6 +48,10 @@ class LLMExtraction:
     lineage: List[Dict[str, Any]] = field(default_factory=list)
     metadata: Dict[str, Any] = field(default_factory=dict)
     model: str = ""
+    # Token accounting from the provider's usage block. Captured even when
+    # the response fails to parse into claims — spend is real whether or not
+    # the extraction produced anything.
+    usage: Dict[str, int] = field(default_factory=dict)
 
     @property
     def used(self) -> bool:
@@ -220,6 +224,13 @@ def extract_with_llm(
 
     out = _parse_response(content, query, results)
     out.model = _model()
+    usage = data.get("usage") or {}
+    if isinstance(usage, dict):
+        out.usage = {
+            k: int(usage[k])
+            for k in ("prompt_tokens", "completion_tokens", "total_tokens")
+            if isinstance(usage.get(k), (int, float))
+        }
     if out.used:
         logger.info(
             "LLM extractor: %d lineage rows, %d meta fields for %r",
