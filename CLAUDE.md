@@ -125,7 +125,7 @@ Key components:
 
 2. **Sessions are short-lived.** Every `kb.py` accessor opens its own short-lived SQLite connection (SQLite open is cheap, WAL journal); nothing holds a database session across requests, and tests point `CRS_KB_PATH` at a tmp file per test.
 
-3. **The ingest ledger is append-only.** Every research run appends its claims to the JSONL ledger on disk (`backend/data/ingest_ledger.jsonl`, configurable via `CRS_INGEST_LEDGER`). Do not delete this file unless you intend to clear the audit trace.
+3. **The ingest ledger is append-only.** Every research run appends its claims to the JSONL ledger on disk (`backend/data/ingest_ledger.jsonl`, configurable via `CRS_INGEST_LEDGER`). Do not delete this file unless you intend to clear the audit trace. Snapshot the KB + ledger + `raw/` with `scripts/snapshot_kb.sh`; restore with `scripts/restore_kb.sh`. `provider_cache.db` is a disposable network skip and is never packed.
 
 4. **Confidence floats are an ordering signal, not a truth mechanism.** They rank and shade the UI. Never gate a write on a confidence threshold — tiers are the trust system.
 

@@ -31,7 +31,7 @@ Backend reads `.env` from the repo root (resolved in `backend/src/config.py`), n
 ## Gotchas
 
 1. **FastAPI route order matters**: in `backend/src/api/routes/graph.py`, literal routes `/strains` and `/strains/search` must be registered before `/strains/{name}`.
-2. **The ingest ledger (`backend/data/ingest_ledger.jsonl`) is append-only** — it is the audit trace. Never delete it casually. Snapshot everything under `backend/data/` with `scripts/snapshot_kb.sh [label]`.
+2. **The ingest ledger (`backend/data/ingest_ledger.jsonl`) is append-only** — it is the audit trace. Never delete it casually. Snapshot the KB + ledger + `raw/` with `scripts/snapshot_kb.sh [label]` (restores via `scripts/restore_kb.sh`). Do not pack `provider_cache.db` — it is a disposable network skip, not evidence.
 3. **Short-lived SQLite connections everywhere.** Every `kb.py` accessor opens its own short-lived connection (SQLite open is cheap, WAL journal) — this sidesteps cross-thread issues under FastAPI. Do not introduce a shared long-lived connection.
 4. **Confidence floats are an ordering signal, not a truth mechanism.** They rank and shade the UI; tiers (§ Architecture) are the trust system. Never gate a write on a confidence threshold.
 5. **CORS is exact-match** and Pydantic Settings v2 requires JSON array syntax for list env vars: `CORS_ORIGINS=["http://localhost:3000"]` — not comma-separated. List both `localhost` and `127.0.0.1`.

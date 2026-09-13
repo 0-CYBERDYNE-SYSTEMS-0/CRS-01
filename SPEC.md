@@ -98,7 +98,8 @@ pytest backend/tests                            # full suite (from backend/ for 
 pytest backend/tests/test_curation_api.py -v    # single file
 cd frontend && npm run lint && npm run build    # lint + typecheck via build
 curl http://localhost:8000/api/v1/graph/stats   # sanity check (post-§7)
-scripts/snapshot_kb.sh [label]                  # snapshot data/ before risky merges
+scripts/snapshot_kb.sh [label]                  # snapshot KB + ledger + raw/ (not provider cache)
+scripts/restore_kb.sh <tarball>                 # restore a snapshot into backend/data/
 ```
 
 Backend reads `.env` from the repo root (resolved in `backend/src/config.py`).
