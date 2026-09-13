@@ -77,6 +77,10 @@ class ResearchRun:
     stages: List[Dict[str, Any]] = field(default_factory=list)
     raw_dir: Optional[str] = None
     error: Optional[str] = None
+    # Accumulated LLM spend for the whole run (all recursion steps): token
+    # counts from every provider usage block. Counted even when a response
+    # fails to parse or the run errors out — spend happened either way.
+    llm_usage: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -94,6 +98,7 @@ class ResearchRun:
             "stages": self.stages,
             "raw_dir": self.raw_dir,
             "error": self.error,
+            "llm_usage": self.llm_usage,
         }
 
 
@@ -252,6 +257,7 @@ class ResearchOrchestrator:
             started_at=int(time.time()),
             providers_used=[p.name for p in self.providers],
         )
+        persisted = False
         try:
             raw_dir = self.ledger_path.parent / "raw" / run.run_id
             raw_dir.mkdir(parents=True, exist_ok=True)
@@ -318,13 +324,25 @@ class ResearchOrchestrator:
                 },
             ]
 
-            # Persist to JSONL ledger.
+            # Persist to JSONL ledger. SPEC §8.2: every submitted run
+            # appends — failures included — so the audit trace has no
+            # blind spots.
             self._persist(run)
+            persisted = True
         except Exception as e:
             logger.exception("ResearchOrchestrator failed")
             run.error = str(e)
         finally:
             run.completed_at = int(time.time())
+            if not persisted:
+                # The happy path already wrote the row; research that blew
+                # up mid-flight still gets one (with its error attached).
+                try:
+                    self._persist(run)
+                except Exception:
+                    logger.exception(
+                        "Ledger persist failed for run %s", run.run_id
+                    )
         return run
 
     # ------------------------------------------------------------------
@@ -423,6 +441,10 @@ class ResearchOrchestrator:
 
         if llm_configured():
             llm_out = extract_with_llm(query, result_dicts)
+            if llm_out is not None:
+                # Spend first: every LLM pass costs tokens whether or not it
+                # yielded usable rows, so accrue before anything can skip it.
+                self._accrue_llm_usage(run, llm_out)
             if llm_out and llm_out.used:
                 llm_claims: List[LineageClaim] = []
                 for row in llm_out.lineage:
@@ -587,6 +609,27 @@ class ResearchOrchestrator:
             self._research(parent, depth=depth + 1, run=run)
 
     # ------------------------------------------------------------------
+    # LLM spend accounting
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _accrue_llm_usage(run: "ResearchRun", out: Any) -> None:
+        """Fold one extraction pass's provider usage block into the run's
+        running totals. Runs even when the pass produced nothing usable —
+        tokens were spent either way."""
+        usage = getattr(out, "usage", None) or {}
+        if not isinstance(usage, dict) or not usage:
+            return
+        agg = run.llm_usage
+        agg["calls"] = agg.get("calls", 0) + 1
+        model = getattr(out, "model", "")
+        if model:
+            agg["model"] = model
+        for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
+            value = usage.get(key)
+            if isinstance(value, (int, float)):
+                agg[key] = agg.get(key, 0) + int(value)
+
+    # ------------------------------------------------------------------
     # Disagreement detection
     # ------------------------------------------------------------------
     def _find_disagreements(
@@ -722,6 +765,10 @@ class ResearchOrchestrator:
                 "disagreement_count": len(run.disagreements),
                 "node_count": run.lineage_graph.get("node_count", 0),
                 "edge_count": run.lineage_graph.get("edge_count", 0),
+                # Honest failure + spend: written for every run, successful
+                # or not (see run()'s finally block).
+                "error": run.error,
+                "llm_usage": run.llm_usage or None,
             }
             f.write(json.dumps(summary, ensure_ascii=False) + "\n")
             for c in run.lineage_claims:
