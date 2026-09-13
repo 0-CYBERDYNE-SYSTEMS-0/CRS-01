@@ -2294,6 +2294,13 @@ def stats() -> Dict[str, Any]:
             "WHERE quarantined=1 AND quarantine_reason=?",
             (UNRESOLVED_PARENT,),
         ).fetchone()["c"]
+        spend = conn.execute(
+            "SELECT COALESCE(SUM(llm_calls),0) AS calls, "
+            "COALESCE(SUM(prompt_tokens),0) AS prompt_tokens, "
+            "COALESCE(SUM(completion_tokens),0) AS completion_tokens, "
+            "COALESCE(SUM(total_tokens),0) AS total_tokens "
+            "FROM research_runs"
+        ).fetchone()
     tier_counts: Dict[str, int] = {}
     for r in strains:
         tier_counts[r["trust_tier"]] = tier_counts.get(r["trust_tier"], 0) + 1
@@ -2308,4 +2315,10 @@ def stats() -> Dict[str, Any]:
         "pending_parent_observations": pending,
         "node_types": {"Strain": len(strains), "Person": 0, "Claim": n_claims},
         "trust_distribution": tier_counts,
+        "llm_spend": {
+            "calls": int(spend["calls"] or 0),
+            "prompt_tokens": int(spend["prompt_tokens"] or 0),
+            "completion_tokens": int(spend["completion_tokens"] or 0),
+            "total_tokens": int(spend["total_tokens"] or 0),
+        },
     }

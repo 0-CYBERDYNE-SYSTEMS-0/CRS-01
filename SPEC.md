@@ -200,7 +200,7 @@ POST /graph/strains/{slug}/review                     human tier verdict (only p
 POST /graph/observations/quarantine                   flag/restore a raw observation
 GET  /graph/parents/pending                           unresolved-parent gate review queue
 POST /graph/parents/{slug}/resolve                    approve a gated parent name
-GET  /graph/stats                                     KB statistics
+GET  /graph/stats                                     KB statistics (incl. llm_spend + provider_cache)
 POST /research/submit                                 deep research → ledger → KB merge → neighborhood
 GET  /research/by-strain?slug=                        ledger claims previously persisted for a strain
 GET  /research/runs                                   run history
