@@ -107,6 +107,21 @@ export interface GraphStats {
   research_runs: number;
   node_types: Record<string, number>;
   trust_distribution: Record<string, number>;
+  pending_parent_observations?: number;
+  llm_spend?: {
+    calls: number;
+    prompt_tokens: number;
+    completion_tokens: number;
+    total_tokens: number;
+  };
+  provider_cache?: {
+    hits: number;
+    misses: number;
+    stores: number;
+    entries: number;
+    hit_rate: number | null;
+    ttl_seconds: number;
+  };
 }
 
 // ---------------------------------------------------------------------------

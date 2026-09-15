@@ -35,6 +35,9 @@ cd frontend && npm run lint && npm run build    # lint + typecheck
 - Network-dependent tests are marked `live` and require `CRS_LIVE_TESTS=1` — they are
   skipped in normal runs and in CI.
 - Before risky KB operations locally, snapshot: `scripts/snapshot_kb.sh [label]`.
+  The tarball includes `crs01.db` (the graph), the ingest ledger, and `raw/`.
+  Restore with `scripts/restore_kb.sh <tarball>`. The provider cache is
+  disposable and is never packed.
 
 ## Ground rules (architectural — do not bend)
 

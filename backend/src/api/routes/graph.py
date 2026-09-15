@@ -62,5 +62,19 @@ async def get_strain(name: str):
 
 @router.get("/stats")
 async def get_graph_stats():
-    """Get knowledge-base statistics."""
-    return kb.stats()
+    """Get knowledge-base statistics, including LLM spend and cache counters."""
+    payload = kb.stats()
+    try:
+        from ...ingestion.research.provider_cache import cache_stats
+
+        payload["provider_cache"] = cache_stats()
+    except Exception:
+        payload["provider_cache"] = {
+            "hits": 0,
+            "misses": 0,
+            "stores": 0,
+            "entries": 0,
+            "hit_rate": None,
+            "ttl_seconds": 0,
+        }
+    return payload

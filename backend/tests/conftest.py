@@ -16,6 +16,9 @@ def scratch_stores(tmp_path, monkeypatch):
     one and may re-point CRS_KB_PATH.
     """
     monkeypatch.setenv("CRS_KB_PATH", str(tmp_path / "crs01_scratch.db"))
+    monkeypatch.setenv(
+        "CRS_PROVIDER_CACHE_PATH", str(tmp_path / "provider_cache.db")
+    )
     from src.ingestion.research import orchestrator as research_orchestrator
 
     ledger = tmp_path / "ingest_ledger.jsonl"

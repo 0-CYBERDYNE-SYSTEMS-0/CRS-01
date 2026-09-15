@@ -156,9 +156,30 @@ def fetch_wikipedia_full(title: str, timeout: float = 10.0) -> Optional[str]:
 
     Returns the wikitext (downgraded to plain text), or None on any failure.
     The text is suitable for lineage extraction via `extractor.extract_lineage`.
+    TTL-cached; a miss or empty body is not stored.
     """
     if not title or not title.strip():
         return None
+
+    def live():
+        text = _fetch_wikipedia_full_live(title, timeout)
+        return {"text": text} if text else None
+
+    from .provider_cache import cached_payload
+
+    out = cached_payload(
+        provider="wikipedia",
+        kind="full",
+        query=title,
+        fetch=live,
+    )
+    if not isinstance(out, dict):
+        return None
+    text = out.get("text")
+    return text if isinstance(text, str) and text.strip() else None
+
+
+def _fetch_wikipedia_full_live(title: str, timeout: float = 10.0) -> Optional[str]:
     try:
         with httpx.Client(timeout=timeout, headers={"User-Agent": UA}) as client:
             r = client.get(

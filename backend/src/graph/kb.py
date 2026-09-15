@@ -339,6 +339,35 @@ def lookup_canonical_slug(conn: sqlite3.Connection, name: str) -> Optional[str]:
     return _alias_map(conn).get(slug)
 
 
+def canonical_identity(name: str) -> str:
+    """Slug used as a cache/search identity.
+
+    Known strain or alias → owning slug. Unknown names → ``normalize_slug``
+    of the observed string. Never creates a strain.
+    """
+    slug = normalize_slug(name)
+    if not slug:
+        return ""
+    with connect() as conn:
+        return lookup_canonical_slug(conn, name) or slug
+
+
+def canonical_display_name(name: str) -> str:
+    """Canonical strain's stored display name if known, else ``name``."""
+    if not (name or "").strip():
+        return name
+    with connect() as conn:
+        slug = lookup_canonical_slug(conn, name)
+        if not slug:
+            return name
+        row = conn.execute(
+            "SELECT name FROM strains WHERE slug=?", (slug,)
+        ).fetchone()
+        if row and row["name"]:
+            return row["name"]
+    return name
+
+
 def _canon_slug(amap: Dict[str, str], slug: str) -> str:
     return amap.get(slug, slug)
 
@@ -2265,6 +2294,13 @@ def stats() -> Dict[str, Any]:
             "WHERE quarantined=1 AND quarantine_reason=?",
             (UNRESOLVED_PARENT,),
         ).fetchone()["c"]
+        spend = conn.execute(
+            "SELECT COALESCE(SUM(llm_calls),0) AS calls, "
+            "COALESCE(SUM(prompt_tokens),0) AS prompt_tokens, "
+            "COALESCE(SUM(completion_tokens),0) AS completion_tokens, "
+            "COALESCE(SUM(total_tokens),0) AS total_tokens "
+            "FROM research_runs"
+        ).fetchone()
     tier_counts: Dict[str, int] = {}
     for r in strains:
         tier_counts[r["trust_tier"]] = tier_counts.get(r["trust_tier"], 0) + 1
@@ -2279,4 +2315,10 @@ def stats() -> Dict[str, Any]:
         "pending_parent_observations": pending,
         "node_types": {"Strain": len(strains), "Person": 0, "Claim": n_claims},
         "trust_distribution": tier_counts,
+        "llm_spend": {
+            "calls": int(spend["calls"] or 0),
+            "prompt_tokens": int(spend["prompt_tokens"] or 0),
+            "completion_tokens": int(spend["completion_tokens"] or 0),
+            "total_tokens": int(spend["total_tokens"] or 0),
+        },
     }

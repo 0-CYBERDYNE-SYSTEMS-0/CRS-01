@@ -30,7 +30,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from ..ledger import ledger_path
-from ...graph.kb import normalize_slug
+from ...graph.kb import canonical_display_name, normalize_slug
 from .providers import (
     ProviderResult,
     get_research_providers,
@@ -81,6 +81,8 @@ class ResearchRun:
     # counts from every provider usage block. Counted even when a response
     # fails to parse or the run errors out — spend happened either way.
     llm_usage: Dict[str, Any] = field(default_factory=dict)
+    # Provider-cache hits/misses for this run (HTTP skipped vs live fetch).
+    cache_usage: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -99,6 +101,7 @@ class ResearchRun:
             "raw_dir": self.raw_dir,
             "error": self.error,
             "llm_usage": self.llm_usage,
+            "cache_usage": self.cache_usage,
         }
 
 
@@ -250,7 +253,23 @@ class ResearchOrchestrator:
     # ------------------------------------------------------------------
     # Public entry point
     # ------------------------------------------------------------------
+    @staticmethod
+    def _stamp_cache_usage(run: "ResearchRun", before: Dict[str, int]) -> None:
+        from .provider_cache import counters as cache_counters
+
+        try:
+            after = cache_counters()
+        except Exception:
+            logger.debug("provider cache counters unavailable", exc_info=True)
+            return
+        run.cache_usage = {
+            "hits": max(0, after.get("hits", 0) - before.get("hits", 0)),
+            "misses": max(0, after.get("misses", 0) - before.get("misses", 0)),
+        }
+
     def run(self, query: str) -> ResearchRun:
+        from .provider_cache import counters as cache_counters
+
         run = ResearchRun(
             query=query,
             run_id=str(uuid.uuid4()),
@@ -258,7 +277,18 @@ class ResearchOrchestrator:
             providers_used=[p.name for p in self.providers],
         )
         persisted = False
+        # Zero baseline so a cache-init failure cannot skip the ledger write.
+        before_cache: Dict[str, int] = {
+            "hits": 0, "misses": 0, "stores": 0, "entries": 0,
+        }
         try:
+            try:
+                before_cache = cache_counters()
+            except Exception:
+                logger.debug(
+                    "provider cache counters unavailable at run start",
+                    exc_info=True,
+                )
             raw_dir = self.ledger_path.parent / "raw" / run.run_id
             raw_dir.mkdir(parents=True, exist_ok=True)
             run.raw_dir = str(raw_dir)
@@ -326,7 +356,12 @@ class ResearchOrchestrator:
 
             # Persist to JSONL ledger. SPEC §8.2: every submitted run
             # appends — failures included — so the audit trace has no
-            # blind spots.
+            # blind spots. Stamp is best-effort: the cache is disposable
+            # and must never block the ledger write.
+            try:
+                self._stamp_cache_usage(run, before_cache)
+            except Exception:
+                logger.debug("cache usage stamp failed", exc_info=True)
             self._persist(run)
             persisted = True
         except Exception as e:
@@ -337,6 +372,10 @@ class ResearchOrchestrator:
             if not persisted:
                 # The happy path already wrote the row; research that blew
                 # up mid-flight still gets one (with its error attached).
+                try:
+                    self._stamp_cache_usage(run, before_cache)
+                except Exception:
+                    logger.debug("cache usage stamp failed", exc_info=True)
                 try:
                     self._persist(run)
                 except Exception:
@@ -386,9 +425,12 @@ class ResearchOrchestrator:
             return
 
         results: List[ProviderResult] = []
+        # Known aliases search under the canonical display name so wiki
+        # and billed providers share one cache blob with the real strain.
+        search_query = canonical_display_name(query)
         for provider in self.providers:
             try:
-                rs = provider.search(query, limit=self.per_query_limit)
+                rs = provider.search(search_query, limit=self.per_query_limit)
                 for r in rs:
                     if r.url and r.url not in self._urls_seen:
                         self._urls_seen.add(r.url)
@@ -580,7 +622,7 @@ class ResearchOrchestrator:
         parents_found = {c.parent_a.lower() for c in run.lineage_claims}
         parents_found.update(c.parent_b.lower() for c in run.lineage_claims)
         if not parents_found and depth == 0:
-            targeted = f"{query} parents lineage genetics cross"
+            targeted = f"{search_query} parents lineage genetics cross"
             for provider in self.providers:
                 try:
                     rs = provider.search(targeted, limit=self.per_query_limit)
@@ -776,6 +818,7 @@ class ResearchOrchestrator:
                 # or not (see run()'s finally block).
                 "error": run.error,
                 "llm_usage": run.llm_usage or None,
+                "cache_usage": run.cache_usage or None,
             }
             f.write(json.dumps(summary, ensure_ascii=False) + "\n")
             for c in run.lineage_claims:

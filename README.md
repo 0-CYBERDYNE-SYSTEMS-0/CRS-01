@@ -97,12 +97,15 @@ frontend/
   src/app/                         App Router pages
   src/components/                  confidence wheel, dossier, sources, dashboard
   src/lib/api-client.ts            backend HTTP + normalization
-scripts/snapshot_kb.sh             snapshot backend/data before risky operations
+scripts/snapshot_kb.sh             snapshot KB + ledger + raw/ before risky operations
+scripts/restore_kb.sh <tarball>    restore a snapshot into backend/data/
 ```
 
 `backend/data/` ships a working seed KB so a fresh clone is immediately useful. The DB and
-the ingest ledger are tracked on purpose (the ledger is the audit trace); `data/raw/` and
-`data/snapshots/` are local runtime artifacts.
+the ingest ledger are tracked on purpose (the ledger is the audit trace); `data/raw/`,
+`data/snapshots/`, and `data/provider_cache.db` (disposable wiki/search TTL cache) are
+local runtime artifacts. `scripts/snapshot_kb.sh` packs `crs01.db` + ledger + `raw/`;
+it does not pack the provider cache. Restore with `scripts/restore_kb.sh <tarball>`.
 
 ## Contributing
 
