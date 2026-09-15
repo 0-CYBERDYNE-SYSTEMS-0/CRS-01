@@ -14,6 +14,13 @@ if [ -z "$ARCHIVE" ] || [ ! -f "$ARCHIVE" ]; then
   exit 1
 fi
 
+# File members (crs01.db, ingest_ledger.jsonl) are replaced wholesale by
+# tar; directories merge. Drop live raw/ first so post-snapshot evidence
+# cannot survive as a mixed-timeline directory.
+if [ -d backend/data/raw ]; then
+  rm -rf backend/data/raw
+fi
+
 mkdir -p backend/data
 tar -xzf "$ARCHIVE" -C backend/data
 

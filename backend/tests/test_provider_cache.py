@@ -5,6 +5,8 @@ fetches are not stored. Alias identity shares one key. Tests never
 touch backend/data/provider_cache.db (conftest points CRS_PROVIDER_CACHE_PATH
 at a tmp file).
 """
+from pathlib import Path
+
 from src.graph import kb
 from src.ingestion.research import provider_cache as pc
 from src.ingestion.research.orchestrator import ResearchOrchestrator
@@ -28,6 +30,16 @@ def _blob():
 
 
 class TestCacheSemantics:
+    def test_default_path_is_backend_data_not_src_data(self, monkeypatch):
+        """Un-overridden cache_path lands next to the KB, not inside src/."""
+        monkeypatch.delenv("CRS_PROVIDER_CACHE_PATH", raising=False)
+        path = pc.cache_path().resolve()
+        expected = (
+            Path(__file__).resolve().parents[1] / "data" / "provider_cache.db"
+        )
+        assert path == expected.resolve()
+        assert path.parts[-3:] == ("backend", "data", "provider_cache.db")
+
     def test_hit_skips_fetch(self):
         calls = {"n": 0}
 
@@ -90,6 +102,61 @@ class TestCacheSemantics:
         )
         assert calls["n"] == 2
         assert pc.peek("tavily", "search", "x", extra="1") is None
+
+    def test_hash_mismatch_refetches(self):
+        """Stored content_hash is checked on read; mismatch deletes + refetches."""
+        calls = {"n": 0}
+
+        def fetch():
+            calls["n"] += 1
+            return _blob()
+
+        pc.cached_payload(
+            provider="wikipedia", kind="search", query="tamper", extra="1",
+            fetch=fetch,
+        )
+        assert calls["n"] == 1
+        with pc.connect() as conn:
+            conn.execute(
+                "UPDATE provider_cache SET content_hash=?",
+                ("0" * 64,),
+            )
+        again = pc.cached_payload(
+            provider="wikipedia", kind="search", query="tamper", extra="1",
+            fetch=fetch,
+        )
+        assert calls["n"] == 2
+        assert again == _blob()
+        row = pc.peek("wikipedia", "search", "tamper", extra="1")
+        assert row is not None
+        assert row["content_hash"] == pc.content_hash(_blob())
+
+    def test_unwritable_cache_still_fetches(self, monkeypatch, tmp_path):
+        """Cache IO failure degrades to live fetch — never raises."""
+        blocked = tmp_path / "not-a-dir"
+        blocked.write_text("file, not a directory", encoding="utf-8")
+        monkeypatch.setenv(
+            "CRS_PROVIDER_CACHE_PATH", str(blocked / "cache.db")
+        )
+        calls = {"n": 0}
+
+        def fetch():
+            calls["n"] += 1
+            return _blob()
+
+        a = pc.cached_payload(
+            provider="wikipedia", kind="search", query="x", extra="1",
+            fetch=fetch,
+        )
+        b = pc.cached_payload(
+            provider="wikipedia", kind="search", query="x", extra="1",
+            fetch=fetch,
+        )
+        assert a == b == _blob()
+        assert calls["n"] == 2
+        assert pc.counters() == {
+            "hits": 0, "misses": 0, "stores": 0, "entries": 0,
+        }
 
     def test_expired_entry_refetches(self):
         calls = {"n": 0}

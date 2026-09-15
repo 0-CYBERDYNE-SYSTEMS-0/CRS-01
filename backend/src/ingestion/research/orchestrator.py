@@ -257,10 +257,14 @@ class ResearchOrchestrator:
     def _stamp_cache_usage(run: "ResearchRun", before: Dict[str, int]) -> None:
         from .provider_cache import counters as cache_counters
 
-        after = cache_counters()
+        try:
+            after = cache_counters()
+        except Exception:
+            logger.debug("provider cache counters unavailable", exc_info=True)
+            return
         run.cache_usage = {
-            "hits": max(0, after["hits"] - before["hits"]),
-            "misses": max(0, after["misses"] - before["misses"]),
+            "hits": max(0, after.get("hits", 0) - before.get("hits", 0)),
+            "misses": max(0, after.get("misses", 0) - before.get("misses", 0)),
         }
 
     def run(self, query: str) -> ResearchRun:
@@ -273,8 +277,18 @@ class ResearchOrchestrator:
             providers_used=[p.name for p in self.providers],
         )
         persisted = False
-        before_cache = cache_counters()
+        # Zero baseline so a cache-init failure cannot skip the ledger write.
+        before_cache: Dict[str, int] = {
+            "hits": 0, "misses": 0, "stores": 0, "entries": 0,
+        }
         try:
+            try:
+                before_cache = cache_counters()
+            except Exception:
+                logger.debug(
+                    "provider cache counters unavailable at run start",
+                    exc_info=True,
+                )
             raw_dir = self.ledger_path.parent / "raw" / run.run_id
             raw_dir.mkdir(parents=True, exist_ok=True)
             run.raw_dir = str(raw_dir)
@@ -342,8 +356,12 @@ class ResearchOrchestrator:
 
             # Persist to JSONL ledger. SPEC §8.2: every submitted run
             # appends — failures included — so the audit trace has no
-            # blind spots.
-            self._stamp_cache_usage(run, before_cache)
+            # blind spots. Stamp is best-effort: the cache is disposable
+            # and must never block the ledger write.
+            try:
+                self._stamp_cache_usage(run, before_cache)
+            except Exception:
+                logger.debug("cache usage stamp failed", exc_info=True)
             self._persist(run)
             persisted = True
         except Exception as e:
@@ -356,6 +374,9 @@ class ResearchOrchestrator:
                 # up mid-flight still gets one (with its error attached).
                 try:
                     self._stamp_cache_usage(run, before_cache)
+                except Exception:
+                    logger.debug("cache usage stamp failed", exc_info=True)
+                try:
                     self._persist(run)
                 except Exception:
                     logger.exception(

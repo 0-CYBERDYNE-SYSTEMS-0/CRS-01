@@ -23,9 +23,13 @@ from typing import Any, Callable, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_CACHE = Path(__file__).resolve().parents[2] / "data" / "provider_cache.db"
+# Same data root as kb._DEFAULT_KB (backend/data/). This module lives one
+# directory deeper (ingestion/research/) than graph/kb.py, so parents[3]
+# not parents[2] — parents[2] would land inside the src package.
+_DEFAULT_CACHE = Path(__file__).resolve().parents[3] / "data" / "provider_cache.db"
 _DEFAULT_TTL = 7 * 24 * 3600  # 7 days
 _COUNTERS = frozenset({"hits", "misses", "stores"})
+_ZERO_COUNTERS = {"hits": 0, "misses": 0, "stores": 0, "entries": 0}
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS provider_cache (
@@ -124,6 +128,18 @@ def _bump(conn: sqlite3.Connection, column: str, n: int = 1) -> None:
     )
 
 
+def _payload_digest(blob: str) -> str:
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+
+def _safe_bump_miss() -> None:
+    try:
+        with connect() as conn:
+            _bump(conn, "misses")
+    except Exception:
+        logger.debug("provider cache miss-counter unavailable", exc_info=True)
+
+
 def cached_payload(
     *,
     provider: str,
@@ -136,79 +152,106 @@ def cached_payload(
 
     TTL of 0 disables the cache (always fetch, never store). Empty/None
     fetch results are returned but not stored — a network failure must
-    not poison the next run.
+    not poison the next run. Cache IO errors degrade to a live fetch;
+    this store is disposable and must never take research down.
     """
     identity = _identity(query)
     key = _make_key(provider, kind, identity, extra)
     ttl = ttl_seconds()
     if ttl <= 0:
-        with connect() as conn:
-            _bump(conn, "misses")
+        _safe_bump_miss()
         return fetch()
 
     now = int(time.time())
-    with connect() as conn:
-        row = conn.execute(
-            "SELECT payload, expires_at FROM provider_cache WHERE cache_key=?",
-            (key,),
-        ).fetchone()
-        if row is not None:
-            if int(row["expires_at"]) > now:
-                conn.execute(
-                    "UPDATE provider_cache SET hits = hits + 1 WHERE cache_key=?",
-                    (key,),
-                )
-                _bump(conn, "hits")
-                try:
-                    return json.loads(row["payload"])
-                except json.JSONDecodeError:
+    try:
+        with connect() as conn:
+            row = conn.execute(
+                "SELECT payload, content_hash, expires_at "
+                "FROM provider_cache WHERE cache_key=?",
+                (key,),
+            ).fetchone()
+            if row is not None:
+                if int(row["expires_at"]) > now:
+                    stored = row["payload"]
+                    digest = row["content_hash"] or ""
+                    if _payload_digest(stored) == digest:
+                        try:
+                            payload = json.loads(stored)
+                        except json.JSONDecodeError:
+                            conn.execute(
+                                "DELETE FROM provider_cache WHERE cache_key=?",
+                                (key,),
+                            )
+                        else:
+                            conn.execute(
+                                "UPDATE provider_cache SET hits = hits + 1 "
+                                "WHERE cache_key=?",
+                                (key,),
+                            )
+                            _bump(conn, "hits")
+                            return payload
                     conn.execute(
                         "DELETE FROM provider_cache WHERE cache_key=?", (key,)
                     )
-            else:
-                conn.execute(
-                    "DELETE FROM provider_cache WHERE cache_key=?", (key,)
-                )
-        _bump(conn, "misses")
+                else:
+                    conn.execute(
+                        "DELETE FROM provider_cache WHERE cache_key=?", (key,)
+                    )
+            _bump(conn, "misses")
+    except Exception:
+        logger.debug(
+            "provider cache lookup failed; fetching live", exc_info=True
+        )
+        return fetch()
 
     payload = fetch()
     if _worth_storing(payload):
-        blob = _canonical_json(payload)
-        digest = hashlib.sha256(blob.encode("utf-8")).hexdigest()
-        now = int(time.time())
-        with connect() as conn:
-            conn.execute(
-                """
-                INSERT INTO provider_cache
-                    (cache_key, provider, kind, identity, payload, content_hash,
-                     fetched_at, expires_at, hits)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)
-                ON CONFLICT(cache_key) DO UPDATE SET
-                    payload = excluded.payload,
-                    content_hash = excluded.content_hash,
-                    fetched_at = excluded.fetched_at,
-                    expires_at = excluded.expires_at
-                """,
-                (key, provider, kind, identity, blob, digest, now, now + ttl),
-            )
-            _bump(conn, "stores")
+        try:
+            blob = _canonical_json(payload)
+            digest = _payload_digest(blob)
+            now = int(time.time())
+            with connect() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO provider_cache
+                        (cache_key, provider, kind, identity, payload, content_hash,
+                         fetched_at, expires_at, hits)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)
+                    ON CONFLICT(cache_key) DO UPDATE SET
+                        payload = excluded.payload,
+                        content_hash = excluded.content_hash,
+                        fetched_at = excluded.fetched_at,
+                        expires_at = excluded.expires_at
+                    """,
+                    (key, provider, kind, identity, blob, digest, now, now + ttl),
+                )
+                _bump(conn, "stores")
+        except Exception:
+            logger.debug("provider cache store failed", exc_info=True)
     return payload
 
 
 def counters() -> Dict[str, int]:
-    with connect() as conn:
-        row = conn.execute(
-            "SELECT hits, misses, stores FROM cache_counters WHERE id=1"
-        ).fetchone()
-        n = conn.execute("SELECT COUNT(*) AS c FROM provider_cache").fetchone()["c"]
-    if row is None:
-        return {"hits": 0, "misses": 0, "stores": 0, "entries": 0}
-    return {
-        "hits": int(row["hits"] or 0),
-        "misses": int(row["misses"] or 0),
-        "stores": int(row["stores"] or 0),
-        "entries": int(n),
-    }
+    """Hit/miss/store totals. Never raises — cache is disposable."""
+    try:
+        with connect() as conn:
+            row = conn.execute(
+                "SELECT hits, misses, stores FROM cache_counters WHERE id=1"
+            ).fetchone()
+            n = conn.execute(
+                "SELECT COUNT(*) AS c FROM provider_cache"
+            ).fetchone()["c"]
+        if row is None:
+            return dict(_ZERO_COUNTERS)
+        return {
+            "hits": int(row["hits"] or 0),
+            "misses": int(row["misses"] or 0),
+            "stores": int(row["stores"] or 0),
+            "entries": int(n),
+        }
+    except Exception:
+        logger.debug("provider cache counters unavailable", exc_info=True)
+        return dict(_ZERO_COUNTERS)
 
 
 def cache_stats() -> Dict[str, Any]:

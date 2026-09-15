@@ -76,6 +76,37 @@ class TestLedgerOnFailure:
         assert len(summary_rows) == 1
         assert summary_rows[0]["error"] is None
 
+    def test_unwritable_cache_path_still_persists_failure(
+        self, monkeypatch, tmp_path
+    ):
+        """An unwritable CRS_PROVIDER_CACHE_PATH must not skip the ledger.
+
+        Cache init used to run before the try/finally safety net, so a bad
+        env var raised with no research_run row. The cache is disposable.
+        """
+        blocked = tmp_path / "not-a-dir"
+        blocked.write_text("file, not a directory", encoding="utf-8")
+        monkeypatch.setenv(
+            "CRS_PROVIDER_CACHE_PATH", str(blocked / "cache.db")
+        )
+
+        def boom(*args, **kwargs):
+            raise RuntimeError("consensus exploded")
+
+        monkeypatch.setattr(orch_mod, "consensus_for", boom)
+        ledger = tmp_path / "ingest_ledger.jsonl"
+        orch = ResearchOrchestrator(providers=[FakeProvider()], max_depth=0)
+
+        run = orch.run("subject")
+
+        assert run.error and "consensus exploded" in run.error
+        summary_rows = [
+            r for r in _ledger_rows(ledger) if r.get("kind") == "research_run"
+        ]
+        assert len(summary_rows) == 1, "exactly one ledger row per run"
+        assert summary_rows[0]["run_id"] == run.run_id
+        assert summary_rows[0]["error"] == run.error
+
     def test_failed_run_merges_into_kb_with_error(self, monkeypatch):
         """An errored run's dict still merges: the research_runs row carries
         the error (pre-existing contract) and a zeroed usage block."""
