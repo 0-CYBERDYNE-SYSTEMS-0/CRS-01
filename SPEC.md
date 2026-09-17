@@ -82,6 +82,7 @@ Search bar
 | Module | Role | Status |
 |---|---|---|
 | `backend/src/graph/kb.py` | Evidence store: schema, migrations, writers, `recompute()`, readers, curation | **keep — heart of system** |
+| `backend/src/graph/agreement.py` | Agreement semantics (registrable domains, synthesized-answer exclusion, parent-set conflict rule) — single implementation shared by KB and pipeline | keep |
 | `backend/src/ingestion/research/` | `orchestrator.py` (pipeline), `providers.py`, `extractor.py`, `llm_extractor.py`, `names.py`, `wikipedia_full.py` | keep |
 | `backend/src/ingestion/archive.py` | Wayback availability, fail-open; opt-in autolookup | keep |
 | `backend/src/api/routes/` | graph, neighborhood, evidence, curation, research, archive | keep |
@@ -145,6 +146,19 @@ time-based promotion ("90 days without contradiction"), auto-VERIFIED from lab
 data, confidence-band tier mapping. Domains — not raw source counts — are the
 consensus unit, because ten scraped mirrors of one seed-bank page are one voice.
 
+**Consensus-unit mechanics (sharpened 2026-09-16).** "Domain" means the
+registrable domain (eTLD+1): `www.`/subdomains/ports collapse
+(`ca.leafly.com` and `leafly.com` are one voice). Provider-synthesized
+answers (`tavily://answer/…`, `perplexity://answer/…` pseudo-URLs) are LLM
+synthesis, not observations of the web — they stay stored and quarantinable
+like any observation, but they **never count toward COMMUNITY_CONSENSUS**, at
+claim time or in `recompute()` (an LLM summary derived from Leafly is not a
+second, independent witness of Leafly). The single implementation of domain
+independence and the parent-set conflict rule ("conflict iff neither equal
+nor subset") lives in `backend/src/graph/agreement.py`; both the KB's
+`recompute()`/`strain_conflicts()` and the orchestrator's claim-time tiering
+import it, so fresh-claim tiers can never drift from derived tiers.
+
 ### 3.3 Confidence
 
 A 0–1 float ordering signal (extraction-pattern specificity, snippet richness,
@@ -178,7 +192,7 @@ stages of one deterministic pipeline, and keeps the vocabulary honestly
 |---|---|---|
 | Hunter (discover + archive) | Provider fan-out + raw persistence | Writes only raw evidence (ledger, `raw/`, `sources`) |
 | Connector (link strains) | Extraction → `merge_research_run` | Writes only strains, lineage observations, LINEAGE claims |
-| Verifier (assess trust) | `recompute()` + `claim_tier()` | Derives tiers only; **cannot produce VERIFIED** |
+| Verifier (assess trust) | `recompute()` + `claim_tier()` (both via `graph/agreement.py`) | Derives tiers only; **cannot produce VERIFIED** |
 
 These boundaries are architectural. Do not broaden them. The two invariants to
 hold in any future change: (1) all pipeline writes flow through
@@ -339,7 +353,9 @@ ingest path, no tier promotion rules involving time.
 2. **Ledger discipline** — every submitted run appends to
    `data/ingest_ledger.jsonl`; nothing ever rewrites or truncates it.
 3. **Tier derivation** — a tuple observed from 2 domains flips to
-   `COMMUNITY_CONSENSUS` after merge; a single-domain tuple stays `ANECDOTAL`.
+   `COMMUNITY_CONSENSUS` after merge; a single-domain tuple stays `ANECDOTAL`
+   (two URLs on one registrable domain stay `ANECDOTAL`; a provider answer
+   plus one real site stays `ANECDOTAL`; the run payload and the KB agree).
 4. **Conflict handling** — two incomparable parent-sets yield `CONTRADICTED`,
    visible via `/conflicts`, hidden by default in the wheel.
 5. **VERIFIED is human-only** — no pipeline path produces it; review is the
@@ -367,6 +383,7 @@ ingest path, no tier promotion rules involving time.
 | 2026-08-19 | Evidence model locked: append-only raw rows, derived aggregates, 2-domain consensus, human-only VERIFIED, quarantine-not-delete. Mock dataset removed ("no mock nothing"). |
 | 2026-09-03 | Immersive 70/30 graph workspace shipped (wheel zoom/pan, full-width dossier). |
 | 2026-09-08 | First-principles review (this document): SPEC rewritten to match reality; §7 deletion/simplification plan approved for execution in four waves. |
+| 2026-09-16 | Consensus-unit fix: independence = registrable domain (eTLD+1); provider-synthesized answers (`tavily://`/`perplexity://` pseudo-URLs) never count toward consensus; one shared implementation in `graph/agreement.py` for KB derivation and claim-time tiering (run-payload tiers can no longer drift from derived tiers). KB re-derived under the corrected unit. |
 
 ---
 
