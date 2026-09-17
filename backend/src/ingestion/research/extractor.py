@@ -19,6 +19,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
+from ...graph.agreement import independent_domains
+
 
 # Capitalized-word heuristic for strain names. Catches "Blue Dream", "OG Kush",
 # "Silver Haze", "Jack Herer", but rejects "The", "A", etc. Allows hyphens,
@@ -265,17 +267,25 @@ def extract_lineage(
 
 
 def consensus(claims: List[LineageClaim]) -> Dict[Tuple[str, str], Dict[str, Any]]:
-    """Group claims by (parent_a, parent_b) tuple and compute consensus."""
+    """Group claims by (parent_a, parent_b) tuple and compute consensus.
+
+    ``count`` is the number of INDEPENDENT registrable domains asserting the
+    tuple (via graph.agreement — never raw URLs, never provider-synthesized
+    answers), matching the KB's COMMUNITY_CONSENSUS unit. ``sources`` keeps
+    every observing URL for display.
+    """
     out: Dict[Tuple[str, str], Dict[str, Any]] = {}
     for c in claims:
         key = (c.parent_a, c.parent_b)
-        entry = out.setdefault(key, {"sources": [], "count": 0, "confidences": []})
+        entry = out.setdefault(key, {"sources": [], "confidences": []})
         entry["sources"].append(
             {"url": c.source_url, "title": c.source_title, "engine": c.source_engine}
         )
         entry["confidences"].append(c.confidence)
-        entry["count"] += 1
     for key, entry in out.items():
+        entry["count"] = len(
+            independent_domains({s["url"] for s in entry["sources"]})
+        )
         if entry["confidences"]:
             entry["avg_confidence"] = round(sum(entry["confidences"]) / len(entry["confidences"]), 3)
     return out

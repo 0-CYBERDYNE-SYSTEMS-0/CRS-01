@@ -90,7 +90,7 @@ What the original spec called Hunter → Connector → Verifier is now one deter
 
 - **Discovery** (hunter stage) — provider fan-out (Tavily/Perplexity/DDG/Wikipedia) writes only raw evidence: the JSONL ledger, `data/raw/<run_id>/`, and `sources` rows.
 - **Linking** (connector stage) — hybrid LLM+regex extraction writes only strains, lineage observations, and LINEAGE claims, all through `kb.merge_research_run()`.
-- **Assessment** (verifier stage) — `kb.recompute()` and `claim_tier()` derive tiers from the evidence; they can never produce VERIFIED (human curation only, via the curation routes).
+- **Assessment** (verifier stage) — `kb.recompute()` and `claim_tier()` derive tiers from the evidence via the shared agreement semantics in `backend/src/graph/agreement.py` (registrable domains; provider-synthesized `tavily://`/`perplexity://` answers never count toward consensus); they can never produce VERIFIED (human curation only, via the curation routes).
 
 ### Backend API Structure
 

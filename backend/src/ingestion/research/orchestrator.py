@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from ..ledger import ledger_path
+from ...graph.agreement import any_parent_sets_conflict, independent_domains
 from ...graph.kb import canonical_display_name, normalize_slug
 from .providers import (
     ProviderResult,
@@ -133,24 +134,26 @@ def claim_tier(
     parent_a: str,
     parent_b: str,
     disagreements: List[Dict[str, Any]],
-    tuple_source_count: int,
+    tuple_domain_count: int,
 ) -> str:
-    """Tier for one fresh claim, same semantics as the KB's recompute():
+    """Tier for one fresh claim, same semantics as the KB's recompute()
+    (both import backend/src/graph/agreement.py — the single implementation):
     CONTRADICTED when the child has any conflicting parent-set assertion in
     this run, COMMUNITY_CONSENSUS when this child's parent-tuple is backed
-    by 2+ distinct source URLs, else ANECDOTAL. VERIFIED is never returned —
-    human-only per the locked 2026-08-19 agreement."""
+    by 2+ independent registrable domains (never URLs, never
+    provider-synthesized answers), else ANECDOTAL. VERIFIED is never
+    returned — human-only per the locked 2026-08-19 agreement."""
     child_l = (child or "").strip().lower()
     for d in disagreements or []:
         if (d.get("child") or "").strip().lower() == child_l:
             return "CONTRADICTED"
-    if tuple_source_count >= 2:
+    if tuple_domain_count >= 2:
         return "COMMUNITY_CONSENSUS"
     return "ANECDOTAL"
 
 
-def _tuple_source_counts(claims: List[Any]) -> Dict[Tuple[str, str, str], int]:
-    """Distinct source URLs per (child, parent_a, parent_b).
+def _tuple_domain_counts(claims: List[Any]) -> Dict[Tuple[str, str, str], int]:
+    """Independent registrable domains per (child, parent_a, parent_b).
 
     Deliberately child-scoped: the run-level ``consensus`` map is keyed by
     parents alone (it is an API payload), so two different children sharing
@@ -173,7 +176,7 @@ def _tuple_source_counts(claims: List[Any]) -> Dict[Tuple[str, str, str], int]:
         if not url:
             continue
         counts.setdefault(key, set()).add(url)
-    return {k: len(v) for k, v in counts.items()}
+    return {k: len(independent_domains(v)) for k, v in counts.items()}
 
 
 def annotate_claim_tiers(run_payload: Dict[str, Any]) -> None:
@@ -182,7 +185,7 @@ def annotate_claim_tiers(run_payload: Dict[str, Any]) -> None:
     be exercised without a live run."""
     claims = run_payload.get("lineage_claims") or []
     disagreements = run_payload.get("disagreements") or []
-    counts = _tuple_source_counts(claims)
+    counts = _tuple_domain_counts(claims)
     for c in claims:
         key = (
             str(c.get("child", "")).strip().lower(),
@@ -306,8 +309,8 @@ class ResearchOrchestrator:
             # Backend tier authority: stamp each claim with the tier the
             # KB's own rules imply, so the frontend never re-derives tiers
             # client-side. Never VERIFIED (human-only). Counts are
-            # child-scoped — see _tuple_source_counts.
-            claim_counts = _tuple_source_counts(run.lineage_claims)
+            # child-scoped independent domains — see _tuple_domain_counts.
+            claim_counts = _tuple_domain_counts(run.lineage_claims)
             for c in run.lineage_claims:
                 key = (
                     (c.child or "").strip().lower(),
@@ -690,16 +693,38 @@ class ResearchOrchestrator:
 
         disagreements: List[Dict[str, Any]] = []
         for child, clist in by_child.items():
-            tuples = {frozenset([c.parent_a, c.parent_b, *c.extra_parents]) for c in clist}
-            if len(tuples) > 1:
-                disagreements.append({
-                    "child": child,
-                    "tuples": [
-                        {"parents": sorted(t), "sources": len(clist)}
-                        for t in tuples
-                    ],
-                    "summary": f"{child} has {len(tuples)} conflicting parent-strain assertions",
-                })
+            # An assertion = the parent-SET one source URL gives the child.
+            urls_by_tuple: Dict[frozenset, Set[str]] = {}
+            for c in clist:
+                pt = frozenset(
+                    p for p in (c.parent_a, c.parent_b, *c.extra_parents) if p
+                )
+                if not pt:
+                    continue
+                urls_by_tuple.setdefault(pt, set()).add(c.source_url or "")
+            tuples = set(urls_by_tuple)
+            # Same rule as the KB's recompute(): two assertions conflict
+            # only when neither set equals nor contains the other — a
+            # subset is a partial telling of the same story, not a
+            # contradiction.
+            if not any_parent_sets_conflict(tuples):
+                continue
+            disagreements.append({
+                "child": child,
+                "tuples": [
+                    {
+                        "parents": sorted(t),
+                        "sources": len(
+                            {u for u in urls_by_tuple[t] if u}
+                        ),
+                    }
+                    for t in sorted(urls_by_tuple, key=sorted)
+                ],
+                "summary": (
+                    f"{child} has {len(tuples)} conflicting parent-strain "
+                    "assertions"
+                ),
+            })
         return disagreements
 
     # ------------------------------------------------------------------
@@ -733,10 +758,11 @@ class ResearchOrchestrator:
                 continue
             groups.setdefault((c.child.lower(), pt), []).append(c)
 
-        # Detect disagreements for coloring.
-        child_to_tuples: Dict[str, Set[Tuple[str, ...]]] = {}
+        # Detect disagreements for coloring (parent-SETs, same rule as the
+        # KB: neither equal nor subset).
+        child_to_tuples: Dict[str, Set[frozenset]] = {}
         for (child, pt), _ in groups.items():
-            child_to_tuples.setdefault(child, set()).add(pt)
+            child_to_tuples.setdefault(child, set()).add(frozenset(pt))
 
         for (child, pt), clist in groups.items():
             # Ensure strain nodes exist for child + every parent.
@@ -758,12 +784,14 @@ class ResearchOrchestrator:
             avg_conf = sum(c.confidence for c in clist) / len(clist)
             unique_urls = list({c.source_url for c in clist if c.source_url})
 
-            # Coloring.
+            # Coloring. Same rules as the KB's recompute(): conflict via
+            # parent-SET comparison; consensus counts independent domains
+            # (never URLs, never provider-synthesized answers).
             siblings = child_to_tuples.get(child, set())
-            if len(siblings) > 1:
+            if any_parent_sets_conflict(siblings):
                 color = "red"
                 agreement = "disagreement"
-            elif len(clist) >= 2:
+            elif len(independent_domains(unique_urls)) >= 2:
                 color = "green"
                 agreement = "multi_source"
             else:

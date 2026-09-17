@@ -51,7 +51,12 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
-from urllib.parse import urlparse
+
+from .agreement import (
+    any_parent_sets_conflict,
+    independent_domains,
+    parent_sets_conflict,
+)
 
 # ---------------------------------------------------------------------------
 # Connection handling
@@ -404,14 +409,6 @@ def _ensure_safe_aliases(conn: sqlite3.Connection) -> bool:
     return changed
 
 
-def _domain(url: str) -> str:
-    try:
-        host = urlparse(url).netloc.lower()
-        return host[4:] if host.startswith("www.") else host
-    except Exception:
-        return url
-
-
 def _now() -> int:
     return int(time.time())
 
@@ -673,12 +670,8 @@ def recompute(conn: sqlite3.Connection) -> None:
     disagree_children: Set[str] = set()
     for child, url_map in by_child_url.items():
         sets = [frozenset(v) for v in url_map.values()]
-        for i in range(len(sets)):
-            for j in range(i + 1, len(sets)):
-                a, b = sets[i], sets[j]
-                if a != b and not (a <= b) and not (b <= a):
-                    disagree_children.add(child)
-                    break
+        if any_parent_sets_conflict(sets):
+            disagree_children.add(child)
 
     conn.execute("DROP TABLE IF EXISTS lineage_edges_tmp")
     conn.execute(
@@ -700,7 +693,7 @@ def recompute(conn: sqlite3.Connection) -> None:
     )
     for (child, parent), obs in ev.items():
         urls = sorted({o["source_url"] for o in obs if o["source_url"]})
-        domains = sorted({_domain(u) for u in urls})
+        domains = sorted(independent_domains(urls))
         avg_conf = sum(o["confidence"] for o in obs) / len(obs)
         if child in disagree_children:
             agreement = "disagreement"
@@ -1508,7 +1501,7 @@ def edge_evidence(child_slug: str) -> List[Dict[str, Any]]:
             # Raw evidence without an aggregate yet (no recompute since the
             # merge) — derive the numbers on the fly, same formulas.
             urls = sorted({o["source_url"] for o in observations if o["source_url"]})
-            domains = sorted({_domain(u) for u in urls})
+            domains = sorted(independent_domains(urls))
             agreement = None
             source_count = len(urls)
             domain_count = len(domains)
@@ -1605,7 +1598,7 @@ def strain_conflicts(child_slug: str) -> List[Dict[str, Any]]:
             for j in range(i + 1, len(keys)):
                 a, b = keys[i], keys[j]
                 # Same rule as recompute(): neither equal nor subset.
-                if a != b and not (a <= b) and not (b <= a):
+                if parent_sets_conflict(a, b):
                     parent_of[_find(i)] = _find(j)
         components: Dict[int, List[int]] = {}
         for i in range(len(keys)):
