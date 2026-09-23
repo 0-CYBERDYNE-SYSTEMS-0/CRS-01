@@ -4,6 +4,10 @@ All providers implement ``ProviderResult`` shape:
     {"title": str, "url": str, "snippet": str, "source": str,
      "score": float | None, "image_url": str | None}
 
+``image_url`` stays on the dataclass so older cache rows still parse.
+Providers do not populate it: a page's lead image is not a photo of the
+strain, and the graph does not render one.
+
 Activation:
   - TAVILY_API_KEY present       → TavilyProvider (live, billed, free trial)
   - PERPLEXITY_API_KEY present   → PerplexityProvider (live, billed, free trial)
@@ -431,10 +435,9 @@ class WikipediaProvider:
                         .get("page")
                         or f"https://en.wikipedia.org/wiki/{title.replace(' ', '_')}"
                     )
-                    # Capture thumbnail for strain images.
-                    thumb = (data.get("thumbnail") or {}).get("source")
-                    original = (data.get("originalimage") or {}).get("source")
-                    image_url = original or thumb or None
+                    # The summary payload's thumbnail/originalimage is the
+                    # article's hero image (a map, a person, a logo), not a
+                    # photograph of the cultivar. Leave it off the result.
                     results.append(
                         ProviderResult(
                             title=data.get("title") or title,
@@ -442,7 +445,6 @@ class WikipediaProvider:
                             snippet=extract,
                             source=self.name,
                             score=None,
-                            image_url=image_url,
                         )
                     )
                 return results

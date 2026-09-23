@@ -537,7 +537,6 @@ export default function ReportView({
 
   const center = response.nodes.find((n) => n.id === response.center_node_id);
   const name = center?.data.name ?? center?.label ?? response.slug;
-  const imageUrl = (center?.data.image_url as string) || "";
   const summary = (center?.data.summary as string) || "";
   const summarySourceUrl = String(
     (center?.data.summary_source_url as string | null | undefined) ?? ""
@@ -869,15 +868,6 @@ export default function ReportView({
             </div>
 
             <div className="flex flex-col gap-4">
-              {imageUrl && (
-                <img
-                  src={imageUrl}
-                  alt={name}
-                  referrerPolicy="no-referrer"
-                  className="h-[150px] w-full rounded-xl border object-cover"
-                  style={{ borderColor: PAPER_EDGE }}
-                />
-              )}
               <MiniWheel response={response} onClick={onBack} />
             </div>
           </div>

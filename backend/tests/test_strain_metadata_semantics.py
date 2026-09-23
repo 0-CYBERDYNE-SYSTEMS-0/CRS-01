@@ -1,8 +1,10 @@
 """Scalar strain metadata write semantics — fill-only-if-null.
 
-upsert_strain is the only automated writer of strains.summary / image_url /
+upsert_strain is the only automated writer of strains.summary /
 thc_range / strain_type / breeder. Its contract: the first non-null value
 wins, later research runs fill gaps but never churn existing metadata.
+image_url is not part of that contract: merges ignore it, and a stored
+Wikipedia lead image is cleared the next time the KB opens.
 (There is deliberately no automated overwrite and no machine path to
 replace a stored value.)
 """
@@ -116,3 +118,39 @@ class TestMergeDoesNotChurnMetadata:
         assert row["summary"] == "Only a summary"
         assert row["breeder"] == "Late Breeder"
         assert row["strain_type"] == "indica"
+
+    def test_merge_ignores_search_image(self):
+        """A hero image on the research payload must not become strain metadata."""
+        kb.merge_research_run({
+            "query": "photo subject",
+            "run_id": "photo-run-1",
+            "started_at": 1724000000,
+            "completed_at": 1724000001,
+            "providers_used": ["t"],
+            "sources_visited": [],
+            "lineage_claims": [],
+            "strain_meta": {
+                "photo-subject": {
+                    "summary": "A real summary",
+                    "image_url": "https://upload.wikimedia.org/wikipedia/commons/x/xx/Not_a_plant.jpg",
+                }
+            },
+        })
+        row = _row("photo-subject")
+        assert row["summary"] == "A real summary"
+        assert not row["image_url"]
+
+    def test_open_clears_stored_wikipedia_lead_image(self):
+        with kb.connect() as conn:
+            kb.upsert_strain(
+                conn,
+                "Haze",
+                image_url="https://upload.wikimedia.org/wikipedia/en/0/05/Hazel.jpg",
+            )
+            kb.upsert_strain(
+                conn,
+                "Kept Photo",
+                image_url="https://example.com/curator.jpg",
+            )
+        assert not _row("haze")["image_url"]
+        assert _row("kept-photo")["image_url"] == "https://example.com/curator.jpg"

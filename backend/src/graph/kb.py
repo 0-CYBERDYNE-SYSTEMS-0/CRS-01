@@ -267,6 +267,7 @@ def connect() -> sqlite3.Connection:
             ("llm_model", "TEXT"),
         ),
     )
+    _drop_search_lead_images(conn)
     if _ensure_safe_aliases(conn):
         # Newly attached aliases must flow into derived edges and release
         # any gated observations that now name a known strain. Do it here
@@ -411,6 +412,27 @@ def _ensure_safe_aliases(conn: sqlite3.Connection) -> bool:
 
 def _now() -> int:
     return int(time.time())
+
+
+def _drop_search_lead_images(conn: sqlite3.Connection) -> None:
+    """Null Wikipedia hero images already stored on strains.
+
+    The summary endpoint's thumbnail is the lead image of whichever
+    article matched the name (a border map for Afghani, a song cover for
+    Purple Haze). Fill-only-if-null then froze the first one. Merges no
+    longer write ``image_url``; this clears the rows that already did.
+    A non-Wikipedia URL is left alone — nothing in the pipeline writes
+    one, so that value was set by hand.
+    """
+    conn.execute(
+        """
+        UPDATE strains SET image_url = NULL
+        WHERE image_url IS NOT NULL AND (
+            image_url LIKE '%wikimedia.org%'
+            OR image_url LIKE '%wikipedia.org%'
+        )
+        """
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -923,7 +945,10 @@ def merge_research_run(run: Dict[str, Any]) -> Dict[str, Any]:
     Expects keys: query, run_id, started_at, completed_at, providers_used,
     sources_visited, lineage_claims (each with child/parent_a/parent_b and
     optional extra_parents), and optional ``strain_meta`` mapping
-    normalized slug → {summary, image_url, thc_range, strain_type, breeder}.
+    normalized slug → {summary, thc_range, strain_type, breeder}.
+    ``image_url`` in that map is ignored: a search hit's hero image is
+    not a photograph of the strain, and the first one used to stick
+    forever under fill-only-if-null.
     Optional ``raw_dir`` points at the run's persisted provider evidence
     (raw/<run_id>/*.json); when the subject strain has no summary at all,
     one is mined VERBATIM from that evidence and stored with attribution
@@ -967,7 +992,6 @@ def merge_research_run(run: Dict[str, Any]) -> Dict[str, Any]:
                     conn,
                     display,
                     summary=m.get("summary"),
-                    image_url=m.get("image_url"),
                     thc_range=m.get("thc_range"),
                     strain_type=m.get("strain_type"),
                     breeder=m.get("breeder"),
@@ -982,7 +1006,6 @@ def merge_research_run(run: Dict[str, Any]) -> Dict[str, Any]:
                 conn,
                 name,
                 summary=m.get("summary"),
-                image_url=m.get("image_url"),
                 thc_range=m.get("thc_range"),
                 strain_type=m.get("strain_type"),
                 breeder=m.get("breeder"),

@@ -307,8 +307,6 @@ function PolarWheel({
   const centerConf = centerNode?.data.confidence ?? 0.5;
   const centerColor = getTrustTierColor(centerTier);
   const centerOrigin = (centerNode?.data.origin as string) || "";
-  const centerImage = (centerNode?.data.image_url as string) || "";
-  const hasPortrait = centerImage !== "";
 
   // ── Relationship layers: direct neighbors of the hovered node stay
   //    bright; everything else recedes. Hover wins; when the pointer is
@@ -429,7 +427,6 @@ function PolarWheel({
         const y = p.y - h / 2;
         const label = String(node.data.name ?? node.label ?? id);
         const pct = Math.round((node.data.confidence ?? 0.5) * 100);
-        const img = (node.data.image_url as string) || "";
         return (
           <g
             key={id}
@@ -441,17 +438,7 @@ function PolarWheel({
             onClick={(e) => { e.stopPropagation(); onSelect(selectedId === id ? null : id); }}
           >
             <rect width={w} height={h} rx={isPerson ? 18 : 8} fill={BG_SURFACE} stroke={color} strokeWidth={isHot ? 1.8 : 1.2} />
-            {img && (
-              <image
-                href={img}
-                x={3} y={3}
-                width={h - 6} height={h - 6}
-                rx={isPerson ? 15 : 4}
-                preserveAspectRatio="xMidYMid slice"
-                clipPath={`url(#clip-${id})`}
-              />
-            )}
-            <text x={img ? h : w / 2} y={13} textAnchor={img ? "start" : "middle"} fontFamily="Inter, sans-serif" fontSize={7.5} letterSpacing="0.12em" fill={TEXT_MUTED} fontWeight={500}>
+            <text x={w / 2} y={13} textAnchor="middle" fontFamily="Inter, sans-serif" fontSize={7.5} letterSpacing="0.12em" fill={TEXT_MUTED} fontWeight={500}>
               {isClaim ? `CLAIM · ${pct}%` : isPerson ? String(node.data.platform ?? "PERSON").toUpperCase() : lineageRoleLabel(response, id)}
             </text>
             {isClaim ? (
@@ -461,7 +448,7 @@ function PolarWheel({
                 </div>
               </foreignObject>
             ) : (
-              <text x={img ? h + 4 : w / 2} y={h - 8} textAnchor={img ? "start" : "middle"} fontFamily="var(--font-eb-garamond), 'EB Garamond', serif" fontSize={13} fontStyle="italic" fill={TEXT_PRIMARY}>
+              <text x={w / 2} y={h - 8} textAnchor="middle" fontFamily="var(--font-eb-garamond), 'EB Garamond', serif" fontSize={13} fontStyle="italic" fill={TEXT_PRIMARY}>
                 {isPerson ? "@" + label : label}
               </text>
             )}
@@ -482,32 +469,17 @@ function PolarWheel({
       >
         <circle cx={64} cy={46} r={46} fill={BG_SURFACE} stroke={centerColor} strokeWidth={1.5} />
         <circle cx={64} cy={46} r={46} fill={`${centerColor}20`} pointerEvents="none" />
-        {hasPortrait && (
-          <>
-            <clipPath id="clip-center">
-              <circle cx={64} cy={22} r={16} />
-            </clipPath>
-            <image
-              href={centerImage}
-              x={48} y={6}
-              width={32} height={32}
-              preserveAspectRatio="xMidYMid slice"
-              clipPath="url(#clip-center)"
-            />
-            <circle cx={64} cy={22} r={16} fill="none" stroke={centerColor} strokeWidth={0.8} strokeOpacity={0.7} pointerEvents="none" />
-          </>
-        )}
-        <text x={64} y={(hasPortrait ? 50 : 26)} textAnchor="middle" fontFamily="Inter, sans-serif" fontSize={7.5} letterSpacing="0.14em" fill={centerColor} fontWeight={500}>
+        <text x={64} y={26} textAnchor="middle" fontFamily="Inter, sans-serif" fontSize={7.5} letterSpacing="0.14em" fill={centerColor} fontWeight={500}>
           SUBJECT
         </text>
-        <text x={64} y={(hasPortrait ? 67 : 45)} textAnchor="middle" fontFamily="var(--font-eb-garamond), 'EB Garamond', serif" fontSize={15} fontStyle="italic" fill={TEXT_PRIMARY}>
+        <text x={64} y={45} textAnchor="middle" fontFamily="var(--font-eb-garamond), 'EB Garamond', serif" fontSize={15} fontStyle="italic" fill={TEXT_PRIMARY}>
           {centerLabel}
         </text>
-        <text x={64} y={(hasPortrait ? 78 : 58)} textAnchor="middle" fontFamily="Inter, sans-serif" fontSize={7.5} letterSpacing="0.04em" fill={TEXT_MUTED}>
+        <text x={64} y={58} textAnchor="middle" fontFamily="Inter, sans-serif" fontSize={7.5} letterSpacing="0.04em" fill={TEXT_MUTED}>
           {TRUST_TIER_META[centerTier]?.badge ?? getTrustTierLabel(centerTier)} · {Math.round(centerConf * 100)}%
         </text>
         {centerOrigin && (
-          <text x={64} y={(hasPortrait ? 88 : 69)} textAnchor="middle" fontFamily="Inter, sans-serif" fontSize={6.5} letterSpacing="0.1em" fill={ACCENT}>
+          <text x={64} y={69} textAnchor="middle" fontFamily="Inter, sans-serif" fontSize={6.5} letterSpacing="0.1em" fill={ACCENT}>
             {centerOrigin.toUpperCase()}
           </text>
         )}

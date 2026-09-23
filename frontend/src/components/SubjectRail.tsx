@@ -42,7 +42,6 @@ export default function SubjectRail({
   const color = tier ? getTrustTierColor(tier) : "var(--accent)";
   const conf = Math.round((center?.data.confidence ?? 0.5) * 100);
   const origin = (center?.data.origin as string) || "";
-  const imageUrl = (center?.data.image_url as string) || "";
   const summary = (center?.data.summary as string) || "";
 
   const engines = new Set<string>();
@@ -75,14 +74,6 @@ export default function SubjectRail({
 
       <div className="flex-1 px-5 py-4">
         {/* Identity */}
-        {imageUrl && (
-          <img
-            src={imageUrl}
-            alt={name}
-            referrerPolicy="no-referrer"
-            className="mb-3 h-[140px] w-full rounded-xl border border-[var(--border)] object-cover"
-          />
-        )}
         <div className="mb-1 flex flex-wrap items-center gap-2">
           {tier && (
             <span
