@@ -8,7 +8,7 @@ A ResearchRun carries:
   - lineage_claims: structured LineageClaim list (with sources, extra_parents)
   - consensus: per-parent-tuple count of independent sources
   - disagreements: tuples where 2+ sources assert DIFFERENT parents
-  - strain_meta: per-strain metadata from LLM (summary, image, type, breeder)
+  - strain_meta: per-strain metadata from LLM (summary, type, breeder, THC)
   - stages: hunter/connector/verifier progress summaries
   - sources_visited: every URL hit (clickable from the UI)
   - raw_responses: provider responses captured for chain-of-custody
@@ -464,7 +464,7 @@ class ResearchOrchestrator:
         # ── Content gate: only pages whose text is actually about cannabis
         #    reach extraction. The title/snippet filter above still lets
         #    generic pages through via the subject fallback (kept so obscure
-        #    strains yield *something*, e.g. images); letting them into the
+        #    strains still yield a page); letting them into the
         #    regex patterns produced parents like "together plants" from a
         #    Royal Society crop-breeding article queried as "GMO". Raw
         #    copies stay persisted above for chain-of-custody. ────────────
@@ -483,7 +483,6 @@ class ResearchOrchestrator:
         # ── Hybrid extraction: LLM first, regex complement ─────────────
         result_dicts = [r.to_dict() for r in results]
         llm_done = False
-        llm_images: Dict[str, str] = {}
         seen_tuples: Set[Tuple[str, str]] = set()
         for c in run.lineage_claims:
             seen_tuples.add((c.parent_a.lower(), c.parent_b.lower()))
@@ -518,14 +517,13 @@ class ResearchOrchestrator:
                 # Collect metadata for the subject strain.
                 if llm_out.metadata:
                     slug = normalize_slug(query)
+                    # image_url is not metadata. A search hit's hero image is
+                    # the lead picture of whichever page matched the name.
                     run.strain_meta[slug] = {
                         k: v
                         for k, v in llm_out.metadata.items()
-                        if k
-                        in ("summary", "strain_type", "thc_range", "breeder", "image_url")
+                        if k in ("summary", "strain_type", "thc_range", "breeder")
                     }
-                    if llm_out.metadata.get("image_url"):
-                        llm_images[slug] = llm_out.metadata["image_url"]
                 llm_done = True
                 logger.info(
                     "LLM extractor: %d claims for %r (%s)",
@@ -543,19 +541,8 @@ class ResearchOrchestrator:
             if r.url and llm_done and r.url in llm_urls:
                 # Don't double-extract from a source the LLM already mined.
                 continue
-            slug = normalize_slug(query)
-            if r.image_url and slug not in llm_images:
-                llm_images[slug] = r.image_url
-                run.strain_meta.setdefault(slug, {})["image_url"] = r.image_url
             claims = extract_lineage(query, r.to_dict())
             self._ingest_claims(run, query, claims, seen_tuples)
-
-        # Collect Wikipedia thumbnail images for the subject.
-        slug = normalize_slug(query)
-        for r in results:
-            if r.image_url and not llm_images.get(slug):
-                run.strain_meta.setdefault(slug, {})["image_url"] = r.image_url
-                llm_images[slug] = r.image_url
 
         # Wikipedia full-article deep dive.
         cannabis_hints = (
@@ -746,7 +733,6 @@ class ResearchOrchestrator:
                 "slug": root_slug,
                 "is_root": True,
                 "summary": root_meta.get("summary"),
-                "image_url": root_meta.get("image_url"),
             },
         }
 
@@ -777,7 +763,6 @@ class ResearchOrchestrator:
                             "name": name,
                             "slug": nid,
                             "summary": meta.get("summary"),
-                            "image_url": meta.get("image_url"),
                         },
                     }
 

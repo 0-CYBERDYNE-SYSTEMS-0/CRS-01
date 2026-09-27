@@ -116,8 +116,7 @@ def _build_user_prompt(query: str, results: List[Dict[str, Any]]) -> str:
         '"parents": [str, ...], "parent_roles": {"Name": "female"|"male"}, '
         '"evidence": str, "source_index": int, '
         '"confidence": float}], "metadata": {"summary": str, '
-        '"strain_type": str, "thc_range": str, "breeder": str, '
-        '"image_url": str}}'
+        '"strain_type": str, "thc_range": str, "breeder": str}}'
     )
 
 
@@ -179,7 +178,7 @@ def _parse_response(raw: str, query: str, results: List[Dict[str, Any]]) -> LLME
 
     meta = data.get("metadata") or {}
     if isinstance(meta, dict):
-        for key in ("summary", "strain_type", "thc_range", "breeder", "image_url"):
+        for key in ("summary", "strain_type", "thc_range", "breeder"):
             v = meta.get(key)
             if isinstance(v, str) and v.strip() and len(v.strip()) < 1200:
                 out.metadata[key] = v.strip()

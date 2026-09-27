@@ -70,7 +70,6 @@ export default function NodeDetailCard({
   const isLineageSatellite =
     node.type === "Strain" && rel !== "subject" && LINEAGE_RELATIONS.has(rel);
   const origin = (node.data.origin as string) || "";
-  const imageUrl = (node.data.image_url as string) || "";
   const summary = (node.data.summary as string) || "";
   const excerpt = (node.data.excerpt as string) || "";
   const sourceUrl = (node.data.source_url as string) || "";
@@ -124,21 +123,6 @@ export default function NodeDetailCard({
 
       {/* Body */}
       <div className="flex-1 overflow-y-auto px-5 py-4" style={{ fontFamily: "Inter, sans-serif", color: TEXT_PRIMARY }}>
-        {imageUrl && (
-          <img
-            src={imageUrl}
-            alt={name}
-            referrerPolicy="no-referrer"
-            style={{
-              width: "100%",
-              height: 130,
-              objectFit: "cover",
-              borderRadius: 10,
-              border: `1px solid ${BORDER}`,
-              marginBottom: 12,
-            }}
-          />
-        )}
         <div
           className="mb-2.5"
           style={{ fontFamily: "var(--font-eb-garamond), 'EB Garamond', serif", fontSize: 26, fontStyle: "italic", fontWeight: 500, lineHeight: 1.1 }}
