@@ -155,6 +155,139 @@ def test_llm_summary_wins_and_stays_unattributed(tmp_path):
     assert data["summary_source_title"] is None
 
 
+def test_song_page_loses_to_the_cultivar_article(tmp_path):
+    """A Wikipedia song that shares the name must not become the summary,
+    even though 'haze' satisfies the cannabis-token gate."""
+    raw_dir = tmp_path / "ingest" / "raw" / "run-song"
+    _write_raw(raw_dir, [
+        {
+            "title": "Purple Haze (Groove Armada song)",
+            "url": "https://en.wikipedia.org/wiki/Purple_Haze_(Groove_Armada_song)",
+            "snippet": (
+                '"Purple Haze" is a song by English electronic music duo '
+                "Groove Armada. The recording is sometimes discussed alongside "
+                "cannabis culture."
+            ),
+            "source": "wikipedia",
+            "score": 1.0,
+            "image_url": "",
+        },
+        {
+            "title": "Purple Haze (cannabis)",
+            "url": "https://en.wikipedia.org/wiki/Purple_Haze_(cannabis)",
+            "snippet": (
+                "Purple Haze is a cannabis strain, a sativa-dominant hybrid. "
+                "It is known for a sweet berry aroma."
+            ),
+            "source": "wikipedia",
+            "score": 1.0,
+            "image_url": "",
+        },
+    ])
+    kb.merge_research_run(_run(
+        query="Purple Haze", run_id="run-song", raw_dir=raw_dir,
+        strain_meta={},
+    ))
+    data = kb.get_strain("Purple Haze")["data"]
+    assert data["summary"]
+    assert "song" not in data["summary"].lower()
+    assert data["summary_source_url"].endswith("Purple_Haze_(cannabis)")
+    assert "cannabis strain" in data["summary"]
+
+
+def test_song_page_alone_leaves_summary_null(tmp_path):
+    raw_dir = tmp_path / "ingest" / "raw" / "run-song-only"
+    _write_raw(raw_dir, [
+        {
+            "title": "Purple Haze (Groove Armada song)",
+            "url": "https://en.wikipedia.org/wiki/Purple_Haze_(Groove_Armada_song)",
+            "snippet": (
+                '"Purple Haze" is a song by English electronic music duo '
+                "Groove Armada, taken from their album Lovebox. Fans of "
+                "cannabis named a strain after it."
+            ),
+            "source": "wikipedia",
+            "score": 1.0,
+            "image_url": "",
+        },
+    ])
+    kb.merge_research_run(_run(
+        query="Purple Haze", run_id="run-song-only", raw_dir=raw_dir,
+    ))
+    data = kb.get_strain("Purple Haze")["data"]
+    assert data["summary"] is None
+    assert data["summary_source_url"] is None
+
+
+def test_page_about_a_different_cross_is_not_the_summary(tmp_path):
+    """A shop listing for another cultivar that names this one as a parent
+    is not a description of this strain."""
+    raw_dir = tmp_path / "ingest" / "raw" / "run-other"
+    _write_raw(raw_dir, [
+        {
+            "title": "Hawaiian Lights: Purest Indica x NL#5",
+            "url": "https://agseedco.com/products/purest-indica-x-nl-5",
+            "snippet": (
+                "This hybrid, affectionately known as Hawaiian Lights, is a "
+                "cross between Purest Indica and Northern Lights #5. The "
+                "cannabis strain was bred in Seattle."
+            ),
+            "source": "tavily",
+            "score": 0.9,
+            "image_url": "",
+        },
+    ])
+    kb.merge_research_run(_run(
+        query="Northern Lights", run_id="run-other", raw_dir=raw_dir,
+    ))
+    data = kb.get_strain("Northern Lights")["data"]
+    assert data["summary"] is None
+    assert data["summary_source_url"] is None
+
+
+def test_open_clears_a_mined_summary_of_the_wrong_work():
+    song = '"Purple Haze" is a song by English electronic duo Groove Armada.'
+    cultivar = (
+        "AK-47, also known simply as AK, is a cannabis strain with high THC "
+        "content. It is a hybrid strain of cannabis that is sativa-dominant."
+    )
+    with kb.connect() as conn:
+        kb.upsert_strain(conn, "Purple Haze")
+        kb.upsert_strain(conn, "AK-47")
+        conn.execute(
+            """
+            UPDATE strains
+            SET summary=?, summary_source_url=?, summary_source_title=?
+            WHERE slug=?
+            """,
+            (
+                song,
+                "https://en.wikipedia.org/wiki/Purple_Haze_(Groove_Armada_song)",
+                "Purple Haze (Groove Armada song)",
+                "purple-haze",
+            ),
+        )
+        conn.execute(
+            """
+            UPDATE strains
+            SET summary=?, summary_source_url=?, summary_source_title=?
+            WHERE slug=?
+            """,
+            (
+                cultivar,
+                "https://en.wikipedia.org/wiki/AK-47_(cannabis)",
+                "AK-47 (cannabis)",
+                "ak-47",
+            ),
+        )
+    purple = kb.get_strain("Purple Haze")["data"]
+    ak = kb.get_strain("AK-47")["data"]
+    assert purple["summary"] is None
+    assert purple["summary_source_url"] is None
+    assert ak["summary"] == cultivar
+    assert ak["summary_source_url"].endswith("AK-47_(cannabis)")
+
+
 def test_missing_raw_dir_leaves_summary_null(tmp_path):
     # No raw_dir key at all.
     kb.merge_research_run(_run(run_id="run-no-raw"))

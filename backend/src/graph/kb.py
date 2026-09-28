@@ -268,6 +268,7 @@ def connect() -> sqlite3.Connection:
         ),
     )
     _drop_search_lead_images(conn)
+    _drop_off_cultivar_summaries(conn)
     if _ensure_safe_aliases(conn):
         # Newly attached aliases must flow into derived edges and release
         # any gated observations that now name a known strain. Do it here
@@ -824,6 +825,94 @@ _STRONG_CANNABIS_HINTS = (
 
 _SENTENCE_RE = re.compile(r"[^!?.]+[!?.]+")
 
+# "is a … strain/hybrid/…" after the cultivar's own name. A bounded run of
+# modifiers ("sativa-dominant", "California-born") is allowed. "is a song"
+# and "is a series" are a different work that happens to share the name.
+_CULTIVAR_PREDICATE = re.compile(
+    r"\bis\s+(?:an?\s+)?(?:[\w'’-]+\s+){0,8}"
+    r"(?:cannabis(?:\s+strain)?|strain|cultivar|hybrid|indica|sativa)\b",
+    re.I,
+)
+_OTHER_WORK_PREDICATE = re.compile(
+    r"\bis\s+(?:an?\s+)?(?:[\w'’-]+\s+){0,6}"
+    r"(?:song|film|movie|album|band|tv\s+series|series|novel|book|episode|single|soundtrack)\b",
+    re.I,
+)
+_OTHER_WORK_PAREN = re.compile(
+    r"\b(?:song|film|movie|album|band|series|novel|book|episode|single|soundtrack|disambiguation)\b",
+    re.I,
+)
+_SUMMARY_LABEL = re.compile(r"^summary:\s*", re.I)
+
+
+def _strain_name_pattern(name: str) -> Optional[re.Pattern[str]]:
+    parts = re.findall(r"[a-z0-9]+", (name or "").lower())
+    if not parts:
+        return None
+    body = r"[\s\-_]*".join(re.escape(p) for p in parts)
+    return re.compile(body, re.I)
+
+
+def _page_describes_cultivar(title: str, text: str, name: str) -> bool:
+    """True when ``text`` is about ``name`` as a cannabis cultivar.
+
+    Mentioning the name next to a cannabis word is not enough. "Haze" in
+    the title makes a song or a TV series look relevant, and a seed-shop
+    page for a different cross names its parents. The lead has to say
+    this name is a cultivar, and the page must not be some other work.
+    """
+    pat = _strain_name_pattern(name)
+    if pat is None:
+        return False
+    paren = re.search(r"\(([^)]*)\)", title or "")
+    if paren and _OTHER_WORK_PAREN.search(paren.group(1)):
+        return False
+    lead = _SUMMARY_LABEL.sub("", re.sub(r"\s+", " ", (text or "").strip()))
+    first = lead.split(".")[0] if lead else ""
+    found = pat.search(first)
+    if not found:
+        return False
+    after = first[found.end():]
+    if _OTHER_WORK_PREDICATE.search(after):
+        return False
+    return _CULTIVAR_PREDICATE.search(after) is not None
+
+
+def _drop_off_cultivar_summaries(conn: sqlite3.Connection) -> None:
+    """Null mined summaries whose source page is not the cultivar article.
+
+    Only rows that carry summary attribution are touched, so an
+    LLM-written or hand-set summary (no source URL) stays. Fill-only-if-null
+    froze the first accepted page; this drops the ones that were never
+    about the strain. AK-47's cannabis article stays. A song page does not.
+    """
+    rows = conn.execute(
+        """
+        SELECT slug, name, summary, summary_source_title
+        FROM strains
+        WHERE summary_source_url IS NOT NULL
+          AND summary IS NOT NULL
+          AND trim(summary) != ''
+        """
+    ).fetchall()
+    for row in rows:
+        if _page_describes_cultivar(
+            row["summary_source_title"] or "",
+            row["summary"] or "",
+            row["name"] or "",
+        ):
+            continue
+        conn.execute(
+            """
+            UPDATE strains
+            SET summary = NULL,
+                summary_source_url = NULL,
+                summary_source_title = NULL
+            WHERE slug = ?
+            """,
+            (row["slug"],),
+        )
+
 
 def _looks_strongly_cannabis_text(text: str) -> bool:
     haystack = (text or "").lower()
@@ -887,10 +976,13 @@ def _mine_summary_from_raw(
     Reads the JSON dumps the research orchestrator persisted under
     ``raw/<run_id>/*.json`` ({title, url, snippet, source, score,
     image_url}). A candidate must (a) mention the strain name
-    (hyphen/space-insensitive) and (b) look cannabis-relevant (the same
-    strong-token gate the orchestrator applies before extraction).
-    Disambiguation stubs ("may refer to") never describe anything and are
-    skipped. Scoring: Wikipedia-sourced rows first, then longer snippets.
+    (hyphen/space-insensitive), (b) look cannabis-relevant (the same
+    strong-token gate the orchestrator applies before extraction), and
+    (c) actually describe that cultivar (``_page_describes_cultivar``).
+    A song, film, or a shop page about a different cross does not qualify,
+    even when it shares the name. Disambiguation stubs ("may refer to")
+    never describe anything and are skipped. Scoring: Wikipedia-sourced
+    rows first, then longer snippets.
     Missing/None ``raw_dir`` (e.g. in tests) yields None — no summary is
     invented.
     """
@@ -920,6 +1012,8 @@ def _mine_summary_from_raw(
         if not _looks_strongly_cannabis_text(haystack):
             continue
         if "disambiguation" in title.lower() or "may refer to" in snippet[:200].lower():
+            continue
+        if not _page_describes_cultivar(title, snippet, query):
             continue
         summary = _lead_sentences(snippet)
         if not summary:
