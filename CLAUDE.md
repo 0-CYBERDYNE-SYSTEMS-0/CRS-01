@@ -8,6 +8,11 @@ A graph-first intelligence layer for cannabis breeding knowledge. The system han
 
 ## Development Commands
 
+```bash
+# Run backend (:8000) + frontend (:3000) from one terminal; Ctrl-C stops both
+./dev.sh
+```
+
 ### Backend (FastAPI + Python)
 
 Backend is managed with `uv` (preferred) or `pip`. The virtual environment is at `backend/.venv/`.
@@ -23,6 +28,9 @@ uvicorn src.main:app --reload --port 8000
 uv pip install -e backend/
 uv pip install -e "backend/[dev]"
 
+# Without uv
+python3 -m venv backend/.venv && backend/.venv/bin/pip install -e 'backend[dev]'
+
 # Run the full backend test suite
 pytest backend/tests
 
@@ -31,6 +39,9 @@ pytest backend/tests/test_curation_api.py
 
 # Run a single test function
 pytest backend/tests/test_curation_api.py::test_quarantine_reduces_edge_and_rederives_tier -v
+
+# Tests marked `live` need network and are skipped unless enabled
+CRS_LIVE_TESTS=1 pytest backend/tests -m live
 ```
 
 The backend reads `.env` from the repository root (resolved in `backend/src/config.py`). It runs standalone on its SQLite knowledge base — no database env vars required. For `List[str]` fields such as `CORS_ORIGINS`, use JSON array syntax in `.env` (e.g., `["http://localhost:3000"]`). See `.env.example` for all variables and notes.
@@ -53,6 +64,8 @@ npm start
 # Run ESLint
 npm run lint
 ```
+
+There is no frontend test runner; `npm run lint && npm run build` is the check (the build type-checks).
 
 The frontend expects `NEXT_PUBLIC_API_URL` in `.env` (default: `http://localhost:8000/api/v1`).
 
@@ -81,6 +94,10 @@ The SQLite knowledge base (`backend/src/graph/kb.py`, file `backend/data/crs01.d
 | COMMUNITY_CONSENSUS | `#2DD4BF` | Prominent |
 | ANECDOTAL | `#94A3B8` | Badge + caveat |
 | CONTRADICTED | `#EF4444` | Hidden by default |
+
+Derivation: 2+ independent registrable domains agree → COMMUNITY_CONSENSUS; single source → ANECDOTAL; conflicting parent sets → CONTRADICTED (kept, not deleted).
+
+**Unresolved-parent gate:** a merge recording an observation whose parent strain the KB has never seen flags it `quarantine_reason='UNRESOLVED_PARENT'` — no node, no edge — until the parent exists via its own research or a curator resolves it (`/graph/parents/pending`, `/graph/parents/{slug}/resolve`). Human quarantine/restore (`HUMAN_APPROVED`) always supersedes the gate.
 
 The prevailing principle is: **a missing connection is more honest than a false one.** Confidence floats rank and shade the UI; the derived trust tiers are the trust system, and VERIFIED is reserved for human curation.
 
