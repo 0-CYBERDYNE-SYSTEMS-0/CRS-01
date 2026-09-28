@@ -2046,7 +2046,13 @@ def set_strain_aliases(
         for alias in add or []:
             _attach_alias(conn, norm, alias)
         if remove:
-            current = _parse_aliases_json(row["aliases_json"])
+            # _attach_alias writes each addition immediately. Re-read the row
+            # before applying removals so an add+remove request cannot erase
+            # the newly attached alias list by using stale pre-add state.
+            current_row = conn.execute(
+                "SELECT aliases_json FROM strains WHERE slug=?", (norm,)
+            ).fetchone()
+            current = _parse_aliases_json(current_row["aliases_json"])
             drop = {normalize_slug(a) for a in remove if normalize_slug(a)}
             kept = [a for a in current if a not in drop]
             conn.execute(

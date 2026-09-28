@@ -21,8 +21,7 @@ _ALIASES: dict[str, str] = {
     "gs cookies": "Girl Scout Cookies",
     "girl scout cookie": "Girl Scout Cookies",
     "girl scout cookies": "Girl Scout Cookies",
-    "cookies": "Girl Scout Cookies",
-    "cookie": "Girl Scout Cookies",
+
     "thin mint": "Thin Mints",
     "gdp": "Granddaddy Purple",
     "grandaddy purple": "Granddaddy Purple",
@@ -33,10 +32,9 @@ _ALIASES: dict[str, str] = {
     "chem-dog": "Chemdawg",
     "chem d": "Chemdawg",
     "chem-d": "Chemdawg",
-    "chem": "Chemdawg",
+
     "chemdawg d": "Chemdawg",
-    "og": "OG Kush",
-    "original gangster": "OG Kush",
+
     "sour d": "Sour Diesel",
     "sour deisel": "Sour Diesel",
     "northen lights": "Northern Lights",
@@ -91,6 +89,9 @@ def is_junk_child_name(child: str, subject_query: str) -> bool:
 # Fragments that mark a *parent* name as scraped prose rather than a
 # cultivar ("known in some sources as Chemdawg" → "sources as Chemdawg").
 _JUNK_PARENT_TOKENS = (
+    "as",
+    "of",
+    "unknown",
     "sources",
     "source",
     "referred",
