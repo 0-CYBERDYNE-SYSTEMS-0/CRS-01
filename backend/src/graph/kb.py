@@ -825,17 +825,44 @@ _STRONG_CANNABIS_HINTS = (
 
 _SENTENCE_RE = re.compile(r"[^!?.]+[!?.]+")
 
-# "is a … strain/hybrid/…" after the cultivar's own name. A bounded run of
-# modifiers ("sativa-dominant", "California-born") is allowed. "is a song"
-# and "is a series" are a different work that happens to share the name.
-_CULTIVAR_PREDICATE = re.compile(
-    r"\bis\s+(?:an?\s+)?(?:[\w'’-]+\s+){0,8}"
-    r"(?:cannabis(?:\s+strain)?|strain|cultivar|hybrid|indica|sativa)\b",
+# Nouns that mean this page is about the named plant. "variety" is the
+# ordinary synonym of strain/cultivar. "cannabis strain" is one noun.
+_CULTIVAR_NOUN = (
+    r"(?:cannabis\s+strain|cannabis|cultivar|strain|hybrid|indica|sativa|variety)"
+)
+# Words that break a modifier run. Without this stop list, "is a parent of
+# this hybrid" and "is listed among the parents of this hybrid" look like
+# a cultivar predicate just because "hybrid" sits a few tokens later.
+_RELATION_WORD = (
+    "of|for|in|into|on|onto|among|amongst|with|by|from|to|the|this|that|"
+    "these|those|our|their|its|as|at|than|via|per|between|across|after|"
+    "about|not|only|just|parent|parents|cross|crossing"
+)
+_MODIFIER = rf"(?:(?!(?:{_RELATION_WORD})\b)[\w'’-]+\s+)"
+_OTHER_WORK_NOUN = (
+    r"(?:tv\s+series|song|film|movie|album|band|series|novel|book|"
+    r"episode|single|soundtrack)"
+)
+_QUOTE_TAIL = r"[\"“”'’)\]]*"
+# Copula or appositive whose noun is another work ("is a song", ", a film").
+# Modifiers stop at relation words, so "is a cannabis strain named after
+# the song" stays a cultivar sentence.
+_OTHER_WORK_COPULA = re.compile(
+    rf"\bis\s+(?:an?|the)\s+(?:{_MODIFIER}){{0,4}}{_OTHER_WORK_NOUN}\b",
     re.I,
 )
-_OTHER_WORK_PREDICATE = re.compile(
-    r"\bis\s+(?:an?\s+)?(?:[\w'’-]+\s+){0,6}"
-    r"(?:song|film|movie|album|band|tv\s+series|series|novel|book|episode|single|soundtrack)\b",
+_OTHER_WORK_TITLE = re.compile(
+    r"\bis\s+the\s+title(?:\s+character)?\s+of\b",
+    re.I,
+)
+_OTHER_WORK_APPOSITIVE = re.compile(
+    rf"{_QUOTE_TAIL}\s*,\s*(?:an?|the)\s+(?:{_MODIFIER}){{0,4}}{_OTHER_WORK_NOUN}\b",
+    re.I,
+)
+# "the film White Widow" / "the song, Purple Haze": the name belongs to the
+# other work even when "is a cannabis strain" follows in the same sentence.
+_OTHER_WORK_BEFORE_NAME = re.compile(
+    rf"\b{_OTHER_WORK_NOUN}\b(?:\s+(?:called|named|titled))?\s*[,:]?\s*{_QUOTE_TAIL}$",
     re.I,
 )
 _OTHER_WORK_PAREN = re.compile(
@@ -843,6 +870,24 @@ _OTHER_WORK_PAREN = re.compile(
     re.I,
 )
 _SUMMARY_LABEL = re.compile(r"^summary:\s*", re.I)
+# "AK-47, also known simply as AK, is a cannabis strain"
+_ALIAS_BRIDGE = (
+    r"(?:\s*,\s*also\s+known\s+(?:simply\s+)?as\s+[\w'’-]+"
+    r"(?:\s+[\w'’-]+){0,3}\s*,)?"
+)
+# Article + modifiers ("is a California-born sativa-dominant hybrid"), or a
+# bare noun ("is sativa"). The article is required once modifiers appear,
+# which is what rejects "is listed among the parents of this hybrid".
+_COPULA_CULTIVAR = re.compile(
+    _ALIAS_BRIDGE
+    + rf"{_QUOTE_TAIL}\s+is\s+(?:(?:an?|the)\s+(?:{_MODIFIER}){{0,6}})?"
+    + rf"{_CULTIVAR_NOUN}\b",
+    re.I,
+)
+_APPOSITIVE_CULTIVAR = re.compile(
+    rf"{_QUOTE_TAIL}\s*,\s*(?:an?|the)\s+(?:{_MODIFIER}){{0,6}}{_CULTIVAR_NOUN}\b",
+    re.I,
+)
 
 
 def _strain_name_pattern(name: str) -> Optional[re.Pattern[str]]:
@@ -853,13 +898,68 @@ def _strain_name_pattern(name: str) -> Optional[re.Pattern[str]]:
     return re.compile(body, re.I)
 
 
+def _anchored_cultivar(pattern: re.Pattern[str], text: str) -> bool:
+    """True when ``pattern`` matches at the start of ``text``.
+
+    A match that ends on "variety" and continues "of a song/film/…" is a
+    different work, not a cultivar predicate.
+    """
+    match = pattern.match(text)
+    if match is None:
+        return False
+    if re.search(r"variety$", match.group(0), re.I) is None:
+        return True
+    rest = text[match.end():]
+    other = re.match(
+        rf"\s+of\s+(?:an?\s+|the\s+)?(?:{_MODIFIER}){{0,3}}{_OTHER_WORK_NOUN}\b",
+        rest,
+        re.I,
+    )
+    return other is None
+
+
+def _alternate_cultivar_wording(first: str, name_body: str) -> bool:
+    """True when the lead names this strain with something other than
+    "Name is a strain": "hybrid cultivar named Name", "known as Name",
+    "call this indica cultivar Name", or "the cannabis strain Name".
+    A parent/cross mention ("parent of the hybrid Name") does not count.
+    """
+    named = re.compile(
+        rf"{_CULTIVAR_NOUN}\b(?:\s*,)?"
+        rf"(?:\s+(?!(?:{_RELATION_WORD})\b)[\w'’-]+){{0,6}}\s*,?\s*"
+        rf"(?:named|called|known\s+(?:simply\s+)?as)\s+"
+        rf"(?:simply\s+|the\s+)?{_QUOTE_TAIL}?(?:{name_body})\b",
+        re.I,
+    )
+    called = re.compile(
+        rf"\b(?:call(?:ed)?|named)\s+(?:this\s+|the\s+|an?\s+)?"
+        rf"(?:{_MODIFIER}){{0,4}}{_CULTIVAR_NOUN}\s+"
+        rf"{_QUOTE_TAIL}?(?:{name_body})\b",
+        re.I,
+    )
+    if named.search(first) or called.search(first):
+        return True
+    juxtaposed = re.compile(
+        rf"\b(?:an?|the|this)\s+(?:{_MODIFIER}){{0,4}}{_CULTIVAR_NOUN}\s*,?\s*"
+        rf"{_QUOTE_TAIL}?(?:{name_body})\b",
+        re.I,
+    )
+    found = juxtaposed.search(first)
+    if found is None:
+        return False
+    window = first[max(0, found.start() - 48):found.start()]
+    return re.search(r"\b(?:parent|parents|cross|crossing)\b", window, re.I) is None
+
+
 def _page_describes_cultivar(title: str, text: str, name: str) -> bool:
     """True when ``text`` is about ``name`` as a cannabis cultivar.
 
-    Mentioning the name next to a cannabis word is not enough. "Haze" in
-    the title makes a song or a TV series look relevant, and a seed-shop
-    page for a different cross names its parents. The lead has to say
-    this name is a cultivar, and the page must not be some other work.
+    Mentioning the name next to a cannabis word is not enough. The first
+    sentence has to predicate this name as a cultivar (including "variety",
+    an appositive, or "hybrid cultivar named Name"). A song, film, shop
+    listing, or parent mention can put the same name first and still fail:
+    "is a parent of this hybrid" is not "is a hybrid", and "the song Name
+    is a cannabis strain…" is still about the song.
     """
     pat = _strain_name_pattern(name)
     if pat is None:
@@ -872,10 +972,18 @@ def _page_describes_cultivar(title: str, text: str, name: str) -> bool:
     found = pat.search(first)
     if not found:
         return False
-    after = first[found.end():]
-    if _OTHER_WORK_PREDICATE.search(after):
+    if _OTHER_WORK_BEFORE_NAME.search(first[:found.start()]):
         return False
-    return _CULTIVAR_PREDICATE.search(after) is not None
+    after = first[found.end():]
+    if _OTHER_WORK_COPULA.search(after) or _OTHER_WORK_TITLE.search(after):
+        return False
+    if _OTHER_WORK_APPOSITIVE.match(after):
+        return False
+    if _anchored_cultivar(_COPULA_CULTIVAR, after):
+        return True
+    if _anchored_cultivar(_APPOSITIVE_CULTIVAR, after):
+        return True
+    return _alternate_cultivar_wording(first, pat.pattern)
 
 
 def _drop_off_cultivar_summaries(conn: sqlite3.Connection) -> None:
@@ -979,10 +1087,12 @@ def _mine_summary_from_raw(
     (hyphen/space-insensitive), (b) look cannabis-relevant (the same
     strong-token gate the orchestrator applies before extraction), and
     (c) actually describe that cultivar (``_page_describes_cultivar``).
-    A song, film, or a shop page about a different cross does not qualify,
-    even when it shares the name. Disambiguation stubs ("may refer to")
-    never describe anything and are skipped. Scoring: Wikipedia-sourced
-    rows first, then longer snippets.
+    Alternate leads ("variety", "hybrid cultivar named X", an appositive)
+    qualify. An early same-name mention does not when its predicate
+    belongs to a song, film, shop listing, or a different cross.
+    Disambiguation stubs ("may refer to") never describe anything and
+    are skipped. Scoring: Wikipedia-sourced rows first, then longer
+    snippets.
     Missing/None ``raw_dir`` (e.g. in tests) yields None — no summary is
     invented.
     """
