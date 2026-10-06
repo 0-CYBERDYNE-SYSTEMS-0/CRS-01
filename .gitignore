@@ -51,3 +51,7 @@ backend/data/provider_cache.db
 *.db-wal
 *.db-shm
 *.db-journal
+
+# runtime data (untracked, keeps .gitkeep)
+backend/data/*
+!backend/data/.gitkeep
