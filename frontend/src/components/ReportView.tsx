@@ -721,9 +721,9 @@ export default function ReportView({
 
   return (
     <div className="h-full overflow-y-auto" style={{ background: DESK }}>
-      <div className="mx-auto max-w-[1120px] px-8 pb-20 pt-6 xl:px-12">
+      <div className="mx-auto max-w-[1120px] px-4 pb-16 pt-4 sm:px-8 sm:pb-20 sm:pt-6 xl:px-12">
         {/* ── Toolbar row ─────────────────────────────────────── */}
-        <div className="mb-6 flex items-center justify-between">
+        <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
           <button
             type="button"
             onClick={onBack}
@@ -739,7 +739,7 @@ export default function ReportView({
 
         {/* ── Paper sheet ─────────────────────────────────────── */}
         <div
-          className="rounded-2xl border px-10 pb-14 pt-12 shadow-[0_24px_80px_rgba(31,42,34,0.25)] xl:px-16"
+          className="rounded-2xl border px-5 pb-10 pt-8 shadow-[0_24px_80px_rgba(31,42,34,0.25)] sm:px-10 sm:pb-14 sm:pt-12 xl:px-16"
           style={{ background: PAPER, borderColor: PAPER_EDGE, color: INK }}
         >
           {/* Masthead */}
@@ -880,8 +880,8 @@ export default function ReportView({
             {statBand.map((s, i) => (
               <div
                 key={s.label}
-                className="min-w-[120px] flex-1 px-5"
-                style={{ borderLeft: i > 0 ? `1px solid ${PAPER_EDGE}` : undefined }}
+                className={`min-w-[7.5rem] flex-1 px-3 sm:px-5 ${i > 0 ? "sm:border-l" : ""}`}
+                style={{ borderColor: PAPER_EDGE }}
               >
                 <div
                   className="tabular-nums"
@@ -1104,7 +1104,7 @@ export default function ReportView({
       {/* ── Fresh-from-the-web result card ────────────────────── */}
       {deepenClaims && (
         <div
-          className="fixed bottom-6 right-6 z-30 w-[340px] rounded-xl border p-4 shadow-2xl"
+          className="fixed bottom-4 left-4 right-4 z-30 rounded-xl border p-4 shadow-2xl sm:bottom-6 sm:left-auto sm:right-6 sm:w-[340px]"
           style={{ background: "#1F3A2F", borderColor: "#2A4A3A", color: "#EDE6D8", fontFamily: SANS, fontSize: 11.5 }}
         >
           <div className="mb-2 flex items-center justify-between">

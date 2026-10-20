@@ -123,14 +123,14 @@ export default function SearchAutocomplete({
         aria-activedescendant={
           activeIndex >= 0 ? `ac-item-${activeIndex}` : undefined
         }
-        className="w-[280px] rounded-lg border border-[var(--border)] bg-[var(--bg-surface)] px-3.5 py-2 text-sm text-[var(--text-primary)] outline-none transition-[border-color] duration-200 placeholder:text-[var(--text-muted)] focus:border-[var(--accent)]"
+        className="w-full min-w-0 rounded-lg border border-[var(--border)] bg-[var(--bg-surface)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none transition-[border-color] duration-200 placeholder:text-[var(--text-muted)] focus:border-[var(--accent)] sm:px-3.5"
       />
 
       {open && value.trim().length > 0 && (
         <div
           id="search-autocomplete-listbox"
           role="listbox"
-          className="absolute left-0 right-0 top-full z-50 mt-1 max-h-[320px] overflow-y-auto rounded-lg border border-[var(--border)] bg-[var(--bg-surface)] shadow-2xl"
+          className="absolute right-0 top-full z-50 mt-1 max-h-[320px] w-[min(280px,calc(100vw-1.5rem))] overflow-y-auto rounded-lg border border-[var(--border)] bg-[var(--bg-surface)] shadow-2xl"
         >
           {loading && matches.length === 0 && (
             <div className="px-3 py-2 text-xs text-[var(--text-muted)]">

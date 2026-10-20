@@ -49,13 +49,13 @@ export default function SourcesView({
 
   return (
     <div className="h-full overflow-y-auto pane-vignette" style={{ background: BG_DEEP }}>
-      <div className="mx-auto max-w-[1120px] px-8 pb-20 pt-8 xl:px-12">
+      <div className="mx-auto max-w-[1120px] px-4 pb-16 pt-6 sm:px-8 sm:pb-20 sm:pt-8 xl:px-12">
         {/* Header */}
         <div className="mb-8">
           <div className="mb-2 text-[10px] uppercase tracking-[0.22em]" style={{ color: "#8B6914", fontFamily: SANS }}>
             Source Trail
           </div>
-          <h2 className="mb-3" style={{ fontFamily: SERIF, fontSize: 32, fontWeight: 500, color: TEXT_PRIMARY, lineHeight: 1.05 }}>
+          <h2 className="mb-3 break-words" style={{ fontFamily: SERIF, fontSize: 32, fontWeight: 500, color: TEXT_PRIMARY, lineHeight: 1.05 }}>
             Sources · <span className="italic">{name}</span>
           </h2>
           <div className="text-[13.5px] italic" style={{ fontFamily: SERIF, color: TEXT_MUTED }}>

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback, useEffect, Suspense } from "react";
+import { useState, useCallback, useEffect, Suspense, type ReactNode } from "react";
 import { useSearchParams } from "next/navigation";
 import {
   fetchHealth,
@@ -29,7 +29,9 @@ import type {
   LineageClaim,
   StageInfo,
   NeighborhoodResponse,
+  TrustTier,
 } from "@/lib/types";
+import { getTrustTierColor, getTrustTierLabel } from "@/lib/types";
 
 const DEFAULT_STRAIN = "gmo";
 const SUGGESTION_LIMIT = 6;
@@ -79,6 +81,11 @@ function HomePageInner() {
   // ── Methodology drawer (the "?" beside the view tabs) ──────────────
   const [methodologyOpen, setMethodologyOpen] = useState(false);
 
+  // Phone sheet for the strain rail. Desktop keeps the rail in the column;
+  // below md the same body opens from the peek bar (and on node select).
+  const [railSheetOpen, setRailSheetOpen] = useState(false);
+  const narrow = useIsNarrow();
+
   // ── Selected wheel node — its detail card renders in the rail ──────
   const [selectedId, setSelectedId] = useState<string | null>(null);
 
@@ -96,6 +103,19 @@ function HomePageInner() {
       url.searchParams.delete("view");
     }
     window.history.replaceState(null, "", url.toString());
+  }, [view]);
+
+  useEffect(() => {
+    if (!railSheetOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setRailSheetOpen(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [railSheetOpen]);
+
+  useEffect(() => {
+    if (view !== "graph") setRailSheetOpen(false);
   }, [view]);
 
   // ── Research state — auto-triggered on unknown strains ─────────────
@@ -347,32 +367,97 @@ function HomePageInner() {
     ? `via ${researchProvider}`
     : "researched";
 
+  const openReport = useCallback(() => {
+    setRailSheetOpen(false);
+    setView("report");
+  }, []);
+
+  const handleSelectNode = useCallback((id: string | null) => {
+    setSelectedId(id);
+    if (id) setRailSheetOpen(true);
+  }, []);
+
+  const peekNode =
+    selectedNode ??
+    neighborhood?.nodes.find((n) => n.id === neighborhood.center_node_id) ??
+    null;
+  const peekName = String(peekNode?.data.name ?? peekNode?.label ?? activeStrain);
+  const peekTier = peekNode?.data.trust_tier as TrustTier | undefined;
+  const showRailPeek =
+    view === "graph" && !railSheetOpen && (Boolean(neighborhood) || showResearchPanel);
+  // Until the viewport is measured, keep the desktop rail mounted (it is
+  // CSS-hidden below md) so a phone open does not flash a 340px column.
+  // Once we know it is narrow, unmount that copy so the sheet is the only one.
+  const mountDesktopRail = narrow !== true;
+  const mountMobileSheet = narrow === true && railSheetOpen && view === "graph";
+
+  const railBody = showResearchPanel ? (
+    <ResearchingPanel
+      strain={activeStrain}
+      claims={researchClaims ?? []}
+      loading={researching}
+      error={researchError}
+      provider={researchProvider ?? undefined}
+      fromLedger={researchFromLedger}
+      stages={researchStages ?? undefined}
+      onDismiss={handleResearchDismiss}
+      onRetry={handleResearchClick}
+    />
+  ) : selectedNode && neighborhood ? (
+    <NodeDetailCard
+      node={selectedNode}
+      response={neighborhood}
+      edgeCount={
+        neighborhood.edges.filter(
+          (e) => e.source === selectedNode.id || e.target === selectedNode.id
+        ).length
+      }
+      onClose={() => setSelectedId(null)}
+      onOpenReport={openReport}
+    />
+  ) : neighborhood ? (
+    <SubjectRail
+      response={neighborhood}
+      strain={activeStrain}
+      researching={researching}
+      claimCount={claimCount}
+      claimSource={claimSource}
+      onOpenReport={openReport}
+      onReview={() => setPanelOpen(true)}
+      onDeepen={handleResearchClick}
+      onSelect={handleSelectNode}
+      onDataChanged={refreshKb}
+    />
+  ) : null;
+
   return (
   <div className="flex h-screen flex-col overflow-hidden">
     {/* ── Header ──────────────────────────────────────────── */}
-    <header className="flex shrink-0 items-center justify-between gap-4 border-b border-[var(--border)] bg-[var(--bg-deep)]/90 px-6 py-2.5">
-      <div className="flex items-center gap-3">
+    <header className="flex shrink-0 items-center gap-2 border-b border-[var(--border)] bg-[var(--bg-deep)]/90 px-3 py-2 sm:gap-4 sm:px-6 sm:py-2.5">
+      <div className="flex shrink-0 items-center gap-2 sm:gap-3">
         <div className="flex h-8 w-8 items-center justify-center rounded-lg border border-[var(--border)] bg-[var(--bg-surface)] text-base font-medium text-[var(--accent)]">
           S
         </div>
-        <div>
+        <div className="hidden min-[400px]:block">
           <div className="text-[15px] font-medium tracking-tight text-[var(--text-primary)]">
             CRS-01
           </div>
-          <div className="text-[9.5px] uppercase tracking-[0.06em] text-[var(--text-muted)]">
+          <div className="hidden text-[9.5px] uppercase tracking-[0.06em] text-[var(--text-muted)] sm:block">
             Cannabis Research Sentinel
           </div>
         </div>
       </div>
 
-      <div className="flex items-center gap-3">
-        <SearchAutocomplete
-          value={searchValue}
-          onChange={setSearchValue}
-          onSubmit={handleSearchSubmit}
-          onSelectMatch={handleAutocompleteSelect}
-          placeholder="Strain name or breeder handle…"
-        />
+      <div className="flex min-w-0 flex-1 items-center justify-end gap-2">
+        <div className="min-w-0 flex-1 sm:max-w-[280px]">
+          <SearchAutocomplete
+            value={searchValue}
+            onChange={setSearchValue}
+            onSubmit={handleSearchSubmit}
+            onSelectMatch={handleAutocompleteSelect}
+            placeholder="Strain name or breeder handle…"
+          />
+        </div>
         {healthStatus && (
           <div className="hidden items-center gap-2 rounded-full border border-[var(--border)] bg-[var(--bg-surface)]/60 px-3 py-1.5 text-[10.5px] text-[var(--text-muted)] sm:flex">
             <span
@@ -391,7 +476,7 @@ function HomePageInner() {
         <button
           onClick={checkHealth}
           title="Check system health"
-          className="flex cursor-pointer items-center rounded-lg border border-[var(--border)] bg-transparent px-3 py-2 text-xs text-[var(--text-muted)] hover:bg-[var(--bg-surface)]"
+          className="flex shrink-0 cursor-pointer items-center rounded-lg border border-[var(--border)] bg-transparent px-3 py-2 text-xs text-[var(--text-muted)] hover:bg-[var(--bg-surface)]"
         >
           ⚙
         </button>
@@ -399,19 +484,36 @@ function HomePageInner() {
     </header>
 
     {/* ── Toolbar: views + methodology + strain shortcuts ─── */}
-    <div className="flex shrink-0 items-center justify-between gap-4 border-b border-[var(--border)] bg-[var(--bg-deep)]/60 px-4 py-2">
-      {/* The "?" sits beside (not inside) the tablist so the
+    <div className="flex shrink-0 items-center justify-between gap-2 border-b border-[var(--border)] bg-[var(--bg-deep)]/60 px-3 py-2 sm:gap-4 sm:px-4">
+      {/* The "?" and Stats sit beside (not inside) the tablist so the
           ViewSwitcher's role="tablist" stays intact. */}
-      <div className="flex items-center gap-2">
-        <ViewSwitcher view={view} onChange={setView} reportBadge={claimCount} />
+      <div className="flex min-w-0 flex-1 items-center gap-2">
+        <div className="min-w-0 overflow-x-auto">
+          <ViewSwitcher view={view} onChange={setView} reportBadge={claimCount} />
+        </div>
         <button
           type="button"
           onClick={() => setMethodologyOpen(true)}
           aria-label="Open methodology — how CRS-01 decides what to show"
           title="Methodology"
-          className="flex h-8 w-8 cursor-pointer items-center justify-center rounded-full border border-[var(--border)] bg-transparent text-[13px] text-[var(--text-muted)] transition-colors hover:border-[var(--accent)] hover:text-[var(--text-primary)]"
+          className="flex h-8 w-8 shrink-0 cursor-pointer items-center justify-center rounded-full border border-[var(--border)] bg-transparent text-[13px] text-[var(--text-muted)] transition-colors hover:border-[var(--accent)] hover:text-[var(--text-primary)]"
         >
           ?
+        </button>
+        <button
+          type="button"
+          onClick={() => setView(view === "dashboard" ? "graph" : "dashboard")}
+          aria-pressed={view === "dashboard"}
+          aria-label="Dashboard — graph totals, not a strain page"
+          title="Dashboard — graph totals, not a strain page"
+          className={`flex h-8 shrink-0 cursor-pointer items-center gap-1.5 rounded-full border px-2.5 text-[11px] uppercase tracking-[0.08em] transition-colors ${
+            view === "dashboard"
+              ? "border-[var(--accent)] bg-[var(--accent)] text-[#0C120E]"
+              : "border-[var(--border)] bg-transparent text-[var(--text-muted)] hover:border-[var(--accent)] hover:text-[var(--text-primary)]"
+          }`}
+        >
+          <span aria-hidden>◫</span>
+          <span className="hidden sm:inline">Stats</span>
         </button>
       </div>
       <div className="flex items-center gap-4">
@@ -436,9 +538,10 @@ function HomePageInner() {
     {/* ── Workspace ────────────────────────────────────────── */}
     <main className="min-h-0 flex-1">
       {view === "graph" && (
-        <div className="flex h-full">
+        <>
+        <div className="flex h-full flex-col md:flex-row">
           {/* ── Graph pane (~70%) ─────────────────────────── */}
-          <section className="relative h-full min-w-0 flex-1">
+          <section className="relative min-h-0 min-w-0 flex-1">
             {neighborhoodLoading && !neighborhood && !researching && (
               <CanvasSkeleton strain={activeStrain} />
             )}
@@ -446,7 +549,7 @@ function HomePageInner() {
             {researching && !neighborhood && (
               <PaneNotice
                 title={`Searching the open web for ${activeStrain}…`}
-                subtitle="Hunter → Connector → Verifier. Claims land in the knowledge base as they're found."
+                subtitle="A claim is kept only when a source states it. They appear here as they're found."
               />
             )}
 
@@ -465,54 +568,33 @@ function HomePageInner() {
               <GraphCanvas
                 response={neighborhood}
                 selectedId={selectedId}
-                onSelect={setSelectedId}
+                onSelect={handleSelectNode}
                 status={neighborhoodLoading && neighborhood ? "Refreshing…" : null}
               />
             )}
           </section>
 
-          {/* ── Context rail (~30%) ─────────────────────────── */}
-          <aside className="hidden w-[340px] shrink-0 flex-col border-l border-[var(--border)] bg-[#12241B] md:flex xl:w-[400px]">
-            {showResearchPanel ? (
-              <ResearchingPanel
-                strain={activeStrain}
-                claims={researchClaims ?? []}
-                loading={researching}
-                error={researchError}
-                provider={researchProvider ?? undefined}
-                fromLedger={researchFromLedger}
-                stages={researchStages ?? undefined}
-                onDismiss={handleResearchDismiss}
-                onRetry={handleResearchClick}
-              />
-            ) : selectedNode && neighborhood ? (
-              <NodeDetailCard
-                node={selectedNode}
-                response={neighborhood}
-                edgeCount={
-                  neighborhood.edges.filter(
-                    (e) => e.source === selectedNode.id || e.target === selectedNode.id
-                  ).length
-                }
-                onClose={() => setSelectedId(null)}
-                onOpenReport={() => setView("report")}
-              />
-            ) : neighborhood ? (
-              <SubjectRail
-                response={neighborhood}
-                strain={activeStrain}
-                researching={researching}
-                claimCount={claimCount}
-                claimSource={claimSource}
-                onOpenReport={() => setView("report")}
-                onReview={() => setPanelOpen(true)}
-                onDeepen={handleResearchClick}
-                onSelect={setSelectedId}
-                onDataChanged={refreshKb}
-              />
-            ) : null}
-          </aside>
+          {showRailPeek && (
+            <RailPeek
+              name={peekName}
+              tier={peekTier}
+              researching={researching}
+              onOpen={() => setRailSheetOpen(true)}
+            />
+          )}
+
+          {mountDesktopRail && (
+            <aside className="hidden h-full w-[340px] shrink-0 flex-col border-l border-[var(--border)] bg-[#12241B] md:flex xl:w-[400px]">
+              {railBody}
+            </aside>
+          )}
         </div>
+        {mountMobileSheet && railBody && (
+          <MobileRailSheet onClose={() => setRailSheetOpen(false)}>
+            {railBody}
+          </MobileRailSheet>
+        )}
+        </>
       )}
 
       {view === "report" &&
@@ -550,6 +632,107 @@ function HomePageInner() {
       open={methodologyOpen}
       onClose={() => setMethodologyOpen(false)}
     />
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Phone rail — the desktop column is hidden below md. A peek keeps the
+// strain name and tier on screen; Details opens the same rail body.
+// ---------------------------------------------------------------------------
+
+function useIsNarrow() {
+  const [narrow, setNarrow] = useState<boolean | null>(null);
+  useEffect(() => {
+    const mq = window.matchMedia("(max-width: 767px)");
+    const apply = () => setNarrow(mq.matches);
+    apply();
+    mq.addEventListener("change", apply);
+    return () => mq.removeEventListener("change", apply);
+  }, []);
+  return narrow;
+}
+
+function RailPeek({
+  name,
+  tier,
+  researching,
+  onOpen,
+}: {
+  name: string;
+  tier?: TrustTier;
+  researching: boolean;
+  onOpen: () => void;
+}) {
+  const color = tier ? getTrustTierColor(tier) : "var(--accent)";
+  return (
+    <button
+      type="button"
+      onClick={onOpen}
+      className="flex w-full shrink-0 items-center justify-between gap-3 border-t border-[var(--border)] bg-[#12241B] px-4 py-3 text-left md:hidden"
+    >
+      <span className="min-w-0">
+        <span className="mb-0.5 flex items-center gap-2">
+          {tier && (
+            <span
+              className="rounded border px-1.5 py-0.5 text-[8px] uppercase tracking-[0.06em]"
+              style={{ color, borderColor: `${color}60` }}
+            >
+              {getTrustTierLabel(tier)}
+            </span>
+          )}
+          {researching && (
+            <span className="text-[9px] uppercase tracking-[0.12em] text-[var(--text-muted)]">
+              Researching
+            </span>
+          )}
+        </span>
+        <span className="block truncate font-serif text-[18px] italic leading-tight text-[var(--text-primary)]">
+          {name}
+        </span>
+      </span>
+      <span className="shrink-0 text-[10px] uppercase tracking-[0.12em] text-[var(--accent)]">
+        Details
+      </span>
+    </button>
+  );
+}
+
+function MobileRailSheet({
+  onClose,
+  children,
+}: {
+  onClose: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <div className="md:hidden">
+      <button
+        type="button"
+        aria-label="Close strain details"
+        className="fixed inset-0 z-40 bg-black/50"
+        onClick={onClose}
+      />
+      <aside
+        role="dialog"
+        aria-modal="true"
+        aria-label="Strain details"
+        className="fixed inset-x-0 bottom-0 z-40 flex h-[min(85vh,720px)] flex-col overflow-hidden rounded-t-2xl border-t border-[var(--border)] bg-[#12241B] shadow-[0_-16px_48px_rgba(0,0,0,0.5)]"
+      >
+        <div className="flex shrink-0 items-center justify-between gap-3 border-b border-[var(--border)] px-4 py-2.5">
+          <span className="text-[10px] uppercase tracking-[0.16em] text-[var(--text-faint)]">
+            Strain details
+          </span>
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-md border border-[var(--border)] px-2.5 py-1 text-[11px] uppercase tracking-[0.08em] text-[var(--text-muted)] hover:text-[var(--text-primary)]"
+          >
+            Close
+          </button>
+        </div>
+        <div className="min-h-0 flex-1 overflow-y-auto">{children}</div>
+      </aside>
     </div>
   );
 }

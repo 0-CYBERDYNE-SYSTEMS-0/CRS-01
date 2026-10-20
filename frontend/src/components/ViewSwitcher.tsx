@@ -4,11 +4,13 @@ import { TRUST_TIER_META } from "@/lib/types";
 
 export type CanvasView = "graph" | "report" | "sources" | "dashboard";
 
+// Dashboard stays a real view (?view=dashboard) but is not an alpha tab.
+// The page renders a separate Stats control so a phone-width Discord open
+// is not a four-tab squeeze.
 const VIEWS: { id: CanvasView; label: string; icon: string }[] = [
   { id: "graph", label: "Graph", icon: "◉" },
   { id: "report", label: "Report", icon: "¶" },
   { id: "sources", label: "Sources", icon: "↗" },
-  { id: "dashboard", label: "Dashboard", icon: "◫" },
 ];
 
 // Active-tab gold = verified gold; sourced from the one token table.
@@ -44,12 +46,10 @@ export default function ViewSwitcher({
             key={v.id}
             role="tab"
             aria-selected={active}
+            aria-label={v.label}
             onClick={() => onChange(v.id)}
+            className="flex shrink-0 items-center gap-1 px-2.5 py-2 sm:gap-[7px] sm:px-4"
             style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 7,
-              padding: "8px 16px",
               borderRadius: 8,
               border: "none",
               cursor: "pointer",
@@ -73,7 +73,7 @@ export default function ViewSwitcher({
             <span style={{ fontSize: 11, opacity: active ? 1 : 0.7 }}>
               {v.icon}
             </span>
-            {v.label}
+            <span className="max-[379px]:sr-only">{v.label}</span>
             {v.id === "report" && reportBadge > 0 && !active && (
               <span
                 style={{
