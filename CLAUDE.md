@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-This file provides guidance to Claw Dev (claude.ai/code) when working with code in this repository.
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 # CRS-01 — Cannabis Research Sentinel
 
@@ -68,6 +68,15 @@ npm run lint
 There is no frontend test runner; `npm run lint && npm run build` is the check (the build type-checks).
 
 The frontend expects `NEXT_PUBLIC_API_URL` in `.env` (default: `http://localhost:8000/api/v1`).
+
+### Success Bar
+
+```bash
+# One-command check (git fsck, npm ci/build, pytest); exit 0 = green. Run before committing/merging.
+scripts/verify.sh
+```
+
+`AGENTS.md` carries overlapping guidance for other coding agents; keep the two consistent when changing architecture notes.
 
 ### Health & Sanity Checks
 
